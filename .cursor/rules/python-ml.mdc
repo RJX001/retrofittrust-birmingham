@@ -1,0 +1,23 @@
+---
+description: Python/ML conventions for RetrofitTrust src modules
+globs: src/**/*.py
+alwaysApply: false
+---
+
+# Python & ML Conventions
+
+```python
+SEED = 42  # top of every script/module using randomness
+```
+
+- Importable modules under `src/retrofittrust/` — no business logic in notebooks
+- Preprocessing: one-hot categoricals, standardise numerics, median impute + missingness flags
+- Anomaly scores: z-score standardise AE + IForest, combine via PyOD average; per-feature reconstruction error
+- SHAP: TreeExplainer; document correlated-feature limitation in docstrings
+- Serialise models with joblib to `models/`
+- Label synthetic data explicitly in code and UI
+
+```python
+# Ledger block hashing — canonical JSON only
+json.dumps(block_without_hash, sort_keys=True)
+```

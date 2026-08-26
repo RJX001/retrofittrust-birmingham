@@ -1,0 +1,257 @@
+# Cursor Rules: RetrofitTrust Birmingham — MSc AI Dissertation
+
+## PROJECT CONTEXT — READ FIRST
+
+**Student:** RJ  
+**University:** Birmingham City University (BCU)  
+**Degree:** MSc Artificial Intelligence  
+**Dissertation Title (FIXED):** Intelligent Urban Decision-Making Framework Using AI, Blockchain and Digital Twins  
+**Illustrative Scenario:** RetrofitTrust Birmingham — Domestic Retrofit Prioritisation and Fuel Poverty under Route to Zero  
+**Geographic Anchor:** Birmingham, United Kingdom  
+**Academic Year:** 2025–2026  
+**Project Stage:** Writing chapters 1–4; about to begin programming for proof-of-concept demonstration.
+
+---
+
+## CORE PRINCIPLE: THIS IS AN MSc RESEARCH DISSERTATION, NOT A COMMERCIAL PRODUCT
+
+The goal is a **rigorous, academically defensible research contribution**, not a production system. The programming exists to demonstrate the framework; the framework is the research. Technical polish on any single component is less important than getting the integration loop (twin → AI → ledger → write-back) working end-to-end.
+
+**When asked to build something:** first assess whether it advances the research contribution. If it's a nice-to-have feature, defer it. If it's scope creep, reject it. Only build things listed in the CURSOR_BUILD_SPEC.md or explicitly approved by RJ.
+
+---
+
+## THE DISSERTATION'S FIXED FIVE-STAGE METHODOLOGY
+
+These stages are **hard constraints**, not a menu:
+
+1. **Review AI, blockchain and digital twin literature** — COMPLETE (Chapter 2 written)
+2. **Develop an integrated conceptual architecture** — COMPLETE (Chapter 4 written, with two diagrams)
+3. **Define data flows, governance mechanisms and stakeholder interactions** — NEXT (after code, for writing)
+4. **Develop illustrative scenarios** — CHOSEN: RetrofitTrust Birmingham (documented and justified in dissertation Chapter 3)
+5. **Evaluate using systems-thinking principles** — AFTER code (to be written once PoC exists)
+
+---
+
+## THE TECHNOLOGY STACK — SETTLED DECISIONS
+
+**Do not re-litigate these. They were chosen through dedicated research.**
+
+### Core ranking model
+- **LightGBM** (primary) or **XGBoost** (equally acceptable), NOT deep learning
+- Gradient-boosted trees are empirically stronger than neural networks on this tabular, mixed categorical/numeric data (Grinsztajn et al., 2022)
+- **NOT CNN, LSTM, transformer, or any deep-learning architecture.** This decision is final.
+
+### Explainability
+- **SHAP with TreeExplainer** — provides exact Shapley values efficiently for tree ensembles
+- Global importance: beeswarm and bar charts
+- Local importance: waterfall plots per property/LSOA
+- Known limitation: can misattribute among correlated features (e.g., floor area, room count, heating cost) — acknowledge this in code comments and dissertation
+
+### Data-quality screening (anomaly detection)
+- **Autoencoder + Isolation Forest ensemble**, combined via z-score standardisation and averaging
+- Library: **PyOD** (single consistent API, not hand-rolled PyTorch + separate sklearn calls)
+- Threshold: Extreme Value Theory (Generalised Pareto fit on reconstruction-error tail), NOT arbitrary percentile cutoffs
+- **Downstream handling:** quarantine-and-flag (attach data-quality confidence), NOT silent deletion (risks equity harm in a fuel-poverty context)
+
+### Digital twin dashboard
+- **Streamlit** — fastest PoC, Python-native, free deployment on Streamlit Community Cloud
+- Mapping: **geopandas + Plotly** choropleth (`px.choropleth_mapbox`)
+- State persistence: **SQLite**
+- **Must include write-back loop** (twin reads state, AI ranks, ledger records, verified outcome writes back to SQLite, dashboard re-reads) — this is what makes it a true digital twin, not a static dashboard
+
+### Blockchain/Ledger
+- **Python `hashlib` SHA-256 hash-chain simulation** — NOT Hyperledger, NOT Ethereum, NOT any real blockchain network
+- Block structure: index, timestamp, data dict, previous_hash, hash (canonical JSON serialisation)
+- Tamper-evidence demo: modify a historical record, show `verify_chain()` catches it
+- **Grant/installer transaction layer is SYNTHETIC — must be explicitly labelled ("SYNTHETIC DATA")**
+
+### Backend orchestration
+- **FastAPI** (or local Python modules called from Streamlit, if RJ prefers smaller scope)
+- Endpoints: `/rank`, `/explain`, `/ledger/append`, `/ledger/verify`
+- Validates with Pydantic schemas
+
+### Repository structure
+- **Cookiecutter Data Science v2** layout (`data/raw`, `data/interim`, `data/processed`, `src/`, `models/`, `reports/`, `notebooks/`, `references/`)
+- `data/raw` is immutable — never edit it in place
+- Reusable logic lives in `src/` as importable Python modules (preprocessing, model training, SHAP utils, ledger module)
+- Numbered Jupyter notebooks in `notebooks/` for narrative/exploration only
+- Fixed random seeds throughout for reproducibility
+
+---
+
+## DATA SOURCES — EXACT, SETTLED
+
+**Join key: 2021 LSOA code** (all three sources use identical 2021 boundaries)
+
+1. **EPC Domestic Energy Performance Certificates**  
+   - Source: `epc.opendatacommunities.org`  
+   - Download full England & Wales bulk (~8.26 GB), **filter to Birmingham LA only**  
+   - Fields: current/potential energy rating, floor area, heating type, wall/roof/window construction, age band, recommended improvements, LSOA code  
+   - **Known issue:** ~16% modelled-vs-metered gap for gas, ~31% for electric; ~6% assessor error; coverage bias (EPCs only where triggered)
+
+2. **English Indices of Deprivation 2025**  
+   - Source: GOV.UK collections page  
+   - **Published: 30 October 2025** (NOT 17 November — that was corrected)  
+   - LSOA-level: IMD score, rank, decile, income deprivation domain  
+   - Uses 2021 LSOA boundaries — clean join with EPC and Census
+
+3. **ONS Census 2021 via Nomis**  
+   - Tables: **TS054 (Tenure)** and **Central Heating**  
+   - LSOA level, filtered to Birmingham  
+   - `nomisweb.co.uk` — use the 2021 Table Finder
+
+4. **LSOA Boundaries (for mapping)**  
+   - ONS Open Geography Portal, 2021 LSOA, Generalised Clipped (BGC)  
+   - Export as GeoJSON for web rendering
+
+---
+
+## DATA QUALITY CAVEATS — DOCUMENT THESE, DON'T HIDE THEM
+
+- **Indices of Deprivation measure area-level relative deprivation**, NOT individual household deprivation. Using LSOA-level scores as proxies for household circumstances risks the **ecological fallacy** — acknowledge this explicitly rather than pretend it doesn't exist.
+- **EPC data is known to diverge from metered energy.** Use the model for **relative prioritisation with explicit explanation** (SHAP), NOT for absolute consumption prediction.
+- **Coverage bias in EPCs** — properties without a triggered cert are missing entirely.
+- **Assessor error and performance-gap research** (Hardy & Glew 2019, DESNZ data) is the justification for program 2 (data-quality screening).
+
+---
+
+## THE FOUR PROGRAMS — BUILD IN THIS ORDER
+
+| # | Name | Type | Key Dependencies | Status |
+|---|---|---|---|---|
+| 1 | Data pipeline + AI model | ML (LightGBM/XGBoost) + SHAP | Merged dataset, PyOD outputs | TO BUILD |
+| 2 | Autoencoder/Isolation Forest screen | Unsupervised AD (embedded in 1's preprocessing) | PyOD, numpy, pandas | TO BUILD (feeds into 1) |
+| 3 | Streamlit dashboard (digital twin) | Dashboard app (Streamlit + geopandas + Plotly) | Program 1 model, SQLite state | TO BUILD (after 1) |
+| 4 | FastAPI backend + ledger | REST API + hash-chain ledger | Program 1 model, Pydantic | TO BUILD (after 3) |
+
+**Checkpoints (you must verify each before proceeding):**
+- After 1+2: trained model, sane cross-val performance, SHAP waterfall plot makes sense
+- After 3: choropleth renders, cohort filters work, dashboard doesn't crash on your test data
+- After 4: full integration loop (twin → AI → ledger → write-back → twin updates) runs end-to-end
+
+---
+
+## THE INTEGRATION LOOP — THE ACADEMIC HEART
+
+This is the dissertation's central technical claim. Get it working:
+
+1. Dashboard (Streamlit) loads merged dataset, user selects a candidate LSOA cohort
+2. Calls AI service → returns ranked scores + SHAP explanations for that cohort
+3. Dashboard displays the ranking; user "decides" (or the demo auto-decides) to pursue a retrofit in that LSOA
+4. Decision is appended to the ledger (with synthetic grant/works data)
+5. A verification outcome is later appended (simulated retrofit results)
+6. SQLite state is updated with the verified outcome
+7. **Next time the dashboard loads or refreshes, the write-back is visible** — the LSOA's priority or data state has changed based on real-world (simulated) feedback
+8. This closed loop — not visual polish — is what makes it a "digital twin" rather than a static dashboard
+
+**Do not skip the write-back step. It is not decoration; it is the proof that integration happened.**
+
+---
+
+## SCOPE CONSTRAINTS — THESE ARE FINAL
+
+**This is a PROOF OF CONCEPT. Specifically:**
+
+- ✓ Small, explainable models
+- ✓ Data-driven scenario dashboard (NOT 3D/game-engine)
+- ✓ Permissioned-ledger simulation (NOT real Ethereum/Fabric)
+- ✓ Synthetic grant transaction data (explicitly labelled)
+- ✗ State-of-the-art predictive accuracy (nice-to-have, not required)
+- ✗ Production authentication/user management
+- ✗ Real deployed blockchain
+- ✗ Real-time IoT streaming
+- ✗ Time-series forecasting on consumption data
+- ✗ High-traffic performance optimisation
+
+**If asked to build any of the ✗ items without explicit approval from RJ, flag it and ask before proceeding.**
+
+---
+
+## ACADEMIC INTEGRITY — NON-NEGOTIABLE
+
+- **Never fabricate citations, datasets, statistics or benchmark numbers.** If you can't verify a claim, say so plainly rather than presenting false confidence.
+- **Every quantitative claim in code comments or output must trace back to a source**, or be labelled "assumed" or "synthetic."
+- **Synthetic data must be labelled explicitly** in UI, output, and code comments. Do not hide it.
+- **Code comments should acknowledge limitations**, not hide them:
+  - "This assumes feature independence; SHAP can misattribute among correlated features"
+  - "Ecological fallacy: LSOA-level scores do not describe individual households"
+  - "EPC modelled-vs-metered gap is ~16% for gas-heated; use for ranking, not absolute prediction"
+- **RJ is responsible for verifying sources before final submission.** Your job is to make it easy for them to do so by being explicit about what's sourced vs. assumed vs. synthetic.
+
+---
+
+## DISSERTATION DOCUMENTS ALREADY WRITTEN — REFERENCE THESE
+
+1. **Master Project Instructions** (26 sections) — defines methodology stages, scope, Birmingham anchor, PoC constraint, expected outcomes, working conventions
+2. **Scenario Definition: RetrofitTrust Birmingham** — Stage 4 specifics (why this scenario, its constraints, data sources, evaluation approach, risks)
+3. **Dissertation Chapters 1–4** — Introduction (problem/aim/scope), Literature Review (AI/XAI/blockchain/digital twins/systems thinking), Methodology (DSRM frame + 5 stages), and Stage 2 Architecture (5-layer diagram + integration loop diagram)
+4. **CURSOR_BUILD_SPEC.md** — this technical specification (what you're building)
+
+**If something in the code seems to conflict with these documents, the Master Project Instructions take absolute precedence.**
+
+---
+
+## WORKING CONVENTIONS
+
+- **British English throughout** — colour, realise, centre, licence, etc.
+- **Referencing:** Harvard style (pending BCU confirmation, but assume Harvard)
+- **Tone in code:** clear, documented, defensive (acknowledge limitations)
+- **Random seeds:** fix all random seeds (numpy, sklearn, pytorch if used) for reproducibility; include a `SEED = 42` constant at the top of scripts
+- **Requirements.txt:** pin exact versions (`lightgbm==4.0.0`, not `lightgbm>=4.0.0`), regenerate after each dependency change
+- **README:** include setup instructions, data-download walkthrough, architecture diagram reference, and a **"This is a proof-of-concept" disclaimer**
+
+---
+
+## WHAT SUCCESS LOOKS LIKE
+
+By the end of the build:
+
+- [ ] Data pipeline loads EPC (Birmingham-filtered), IMD, Census, joins on LSOA code without silent data loss
+- [ ] Autoencoder + Isolation Forest screen flags anomalies at a rate consistent with ~27–60% EPC error literature
+- [ ] LightGBM model trains and cross-validates; SHAP explains specific property rankings
+- [ ] Streamlit dashboard displays choropleth, cohort filters, SHAP panels, handles basic interactions
+- [ ] FastAPI backend orchestrates model inference and ledger operations
+- [ ] Hash-chain ledger appends blocks, verifies chain integrity, catches tampering
+- [ ] Full integration loop (twin → AI → ledger → write-back → twin update) works end-to-end, demonstrated with a scripted example
+- [ ] Code follows CCDS structure, has a README, pinned requirements.txt, fixed random seeds
+- [ ] Repository is deployable: `git clone`, `pip install -r requirements.txt`, scripts run on raw data without modification
+
+---
+
+## OPEN ITEMS — ASK RJ BEFORE ASSUMING
+
+- Exact formula for the "retrofit priority score" target (how are EPC rating gap and IMD income weighted together?)
+- Whether to include Census tenure/heating as direct model features or only for narrative
+- Cohort size for the demo (how many properties/LSOAs to showcase end-to-end?)
+- Whether FastAPI is required or Streamlit + local modules is sufficient for PoC
+- Final word count and submission deadline for the dissertation
+- BCU's referencing style (Harvard assumed, unconfirmed)
+- Ethics approval status (likely minimal risk, but unconfirmed)
+
+---
+
+## COMMUNICATION STYLE
+
+When writing code:
+- **Be explicit about data quality.** Comment on known gaps, not to apologise for them, but to document them.
+- **Make assumptions visible.** If you've chosen a default (e.g., "assume 30-day rolling window"), document why.
+- **Link back to the research.** In docstrings, reference the chapters or research reports that justify a design choice.
+- **Acknowledge limitations.** "This model achieves X accuracy on the training set; the EPC performance-gap literature suggests it will be less accurate on real energy use" is better than silent overconfidence.
+
+When you get stuck:
+- **Check the Master Project Instructions and CURSOR_BUILD_SPEC.md first.** The decision may already be made.
+- **If you find yourself redesigning something (e.g., "we should use FastAPI instead of Streamlit"), pause and flag it to RJ rather than implementing the change unilaterally.**
+- **If you're adding a feature not in the spec, ask first.**
+
+---
+
+## FINAL RULE: KEEP IT SMALL AND FOCUSED
+
+Every line of code you write must serve the research contribution. The contribution is **demonstrating integrated AI + blockchain + digital-twin framework with explainability and governance, grounded in a real UK urban retrofit problem.** Code that looks impressive but doesn't serve that goal is bloat.
+
+Prefer **100 lines of clear, well-documented code with good integration** over **1000 lines of beautiful individual components that don't talk to each other.**
+
+---
+
+*This .cursorrules file operationalises the Master Project Instructions and CURSOR_BUILD_SPEC.md. If you're unsure about a design decision, check these documents first. If the documents don't cover it, ask RJ.*

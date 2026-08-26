@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+# Large raw datasets — keep structure only
+data/raw/**
+!data/raw/.gitkeep
+!data/raw/README.md
+
+# Generated artifacts (optional local cache)
+data/interim/*
+data/processed/*
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+models/*.joblib
+reports/figures/*.png
+reports/figures/*.html
+
+*.db
+.env

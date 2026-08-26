@@ -1,0 +1,31 @@
+---
+description: RetrofitTrust Birmingham dissertation PoC — core constraints and build order
+alwaysApply: true
+---
+
+# RetrofitTrust Birmingham — Core Rules
+
+MSc AI dissertation PoC at BCU. Title: **Intelligent Urban Decision-Making Framework Using AI, Blockchain and Digital Twins.**
+
+## Non-negotiable stack
+- **Ranking model:** LightGBM or XGBoost + SHAP TreeExplainer — NOT deep learning
+- **Anomaly detection:** PyOD AutoEncoder + Isolation Forest ensemble — quarantine/flag, never silent delete
+- **Dashboard:** Streamlit + geopandas + Plotly choropleth — must include write-back loop via SQLite
+- **Ledger:** Python hashlib SHA-256 hash-chain — NOT real blockchain; synthetic grant data labelled "SYNTHETIC DATA"
+- **Backend:** FastAPI with `/rank`, `/explain`, `/ledger/append`, `/ledger/verify`
+- **Layout:** Cookiecutter Data Science v2; `data/raw` is immutable; logic in `src/retrofittrust/`
+
+## Build order
+1. Data pipeline + join on 2021 LSOA (EPC Birmingham-filtered, IMD 2025, Census TS054 + Central Heating)
+2. Anomaly screening (feeds preprocessing)
+3. LightGBM + SHAP
+4. Streamlit dashboard (static first, then write-back)
+5. Ledger standalone, then FastAPI integration
+
+## Academic priorities
+- End-to-end integration loop (twin → AI → ledger → write-back) matters more than polish
+- Acknowledge limitations: ecological fallacy (LSOA IMD), EPC performance gap, SHAP correlated-feature caveat
+- British English; fixed random seeds (`SEED = 42`); pin requirements.txt versions
+
+## Do NOT build without RJ approval
+Real blockchain, 3D twin, deep learning core model, production auth, IoT streaming, time-series forecasting.
