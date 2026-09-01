@@ -34,14 +34,16 @@ def _seed_chain_if_empty() -> None:
     from retrofittrust.ledger.synthetic import (
         synthetic_eligibility_block,
         synthetic_verification_block,
+        synthetic_works_claimed_block,
     )
 
     ledger = Ledger(LEDGER_PATH)
     if ledger.is_empty():
         ledger.initialise_genesis()
         ledger.append_block(synthetic_eligibility_block(lsoa="E01000001", priority_score=0.75))
+        ledger.append_block(synthetic_works_claimed_block(lsoa="E01000001"))
         ledger.append_block(synthetic_verification_block(lsoa="E01000001"))
-        log.info("Seeded demo chain with genesis + 2 %s blocks", SYNTHETIC_LABEL)
+        log.info("Seeded demo chain with genesis + 3 %s blocks", SYNTHETIC_LABEL)
 
 
 def main() -> int:

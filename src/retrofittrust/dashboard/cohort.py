@@ -16,8 +16,13 @@ def _find_lsoa_column(df: pd.DataFrame) -> str:
 
 
 def _load_merged_lsoa() -> pd.DataFrame:
-    frame, _source = load_lsoa_frame(allow_synthetic_fallback=True)
-    return normalise_columns(frame)
+    try:
+        frame, _source = load_lsoa_frame(allow_synthetic_fallback=True)
+        return normalise_columns(frame)
+    except (ValueError, KeyError, TypeError):
+        from retrofittrust.api.features import _synthetic_lsoa_frame
+
+        return _synthetic_lsoa_frame()
 
 
 def select_demo_cohort(n: int | None = None) -> list[str]:

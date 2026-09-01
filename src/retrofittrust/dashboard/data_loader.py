@@ -20,8 +20,14 @@ BIRMINGHAM_CENTRE = {"lat": 52.4862, "lon": -1.8904}
 
 
 def load_lsoa_dataset() -> tuple[pd.DataFrame, str]:
-    frame, source = load_lsoa_frame(allow_synthetic_fallback=True)
-    return add_composite_score(normalise_columns(frame)), source
+    """Load LSOA frame; fall back to labelled synthetic demo if merge artefact is unusable."""
+    try:
+        frame, source = load_lsoa_frame(allow_synthetic_fallback=True)
+        return add_composite_score(normalise_columns(frame)), source
+    except (ValueError, KeyError, TypeError):
+        from retrofittrust.api.features import _synthetic_lsoa_frame
+
+        return _synthetic_lsoa_frame(), "synthetic_fallback"
 
 
 def _synthetic_geojson(codes: list[str]) -> dict[str, Any]:
@@ -133,3 +139,88 @@ def seeded_sample(df: pd.DataFrame, n: int) -> pd.DataFrame:
     if "priority_score" in df.columns:
         return df.sort_values("priority_score", ascending=False).head(n)
     return df.sample(n=n, random_state=SEED)
+
+
+def build_lsoa_detail(row: pd.Series, state_entry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Structured detail payload for the per-LSOA panel (twin + ledger stub)."""
+    state_entry = state_entry or {}
+    meta = state_entry.get("metadata") or {}
+    outcome = state_entry.get("latest_outcome") or {}
+
+    def _num(key: str) -> float | None:
+        val = pd.to_numeric(row.get(key), errors="coerce")
+        return None if pd.isna(val) else float(val)
+
+    return {
+        "lsoa21cd": str(row.get("lsoa21cd", "")),
+        "lsoa21nm": str(row.get("lsoa21nm", "") or ""),
+        "epc_current": row.get("epc_current"),
+        "epc_potential": row.get("epc_potential"),
+        "epc_gap": _num("epc_gap"),
+        "epc_current_need": _num("epc_current_need"),
+        "imd_decile": _num("imd_decile"),
+        "n_properties": _num("n_properties"),
+        "priority_score": _num("priority_score"),
+        "priority_display": _num("priority_display"),
+        "anomaly_flag": row.get("anomaly_flag"),
+        "verified": bool(row.get("verified")),
+        "verification_status": str(row.get("verification_status", "candidate")),
+        "epc_uplift_bands": int(row.get("epc_uplift_bands") or 0),
+        "ledger_event": meta.get("event"),
+        "ledger_updated": state_entry.get("updated_at"),
+        "outcome_epc_before": outcome.get("epc_before"),
+        "outcome_epc_after": outcome.get("epc_after"),
+        "outcome_recorded_at": outcome.get("recorded_at"),
+        "is_synthetic": bool(meta.get("label") == "SYNTHETIC DATA" or outcome),
+    }
+
+
+def whatif_budget_projection(
+    df: pd.DataFrame,
+    *,
+    retrofit_rate_pct: float,
+    budget_cap_gbp: float,
+    cost_per_lsoa_gbp: float = 8_500.0,
+    epc_uplift_bands: int = 2,
+) -> dict[str, Any]:
+    """Client-side cohort projection — not a second ML model.
+
+    Prioritises by ``priority_display`` (or ``priority_score``), then applies
+    budget and retrofit-rate caps. Costs are **SYNTHETIC DATA** for demo only.
+    """
+    if df.empty:
+        return {
+            "funded_count": 0,
+            "budget_spent_gbp": 0.0,
+            "budget_remaining_gbp": budget_cap_gbp,
+            "mean_priority_funded": None,
+            "fp_proxy_before": 0,
+            "fp_proxy_after": 0,
+            "funded_codes": [],
+        }
+
+    score_col = "priority_display" if "priority_display" in df.columns else "priority_score"
+    ranked = df.sort_values(score_col, ascending=False).copy()
+    rate_cap = max(0, int(round(len(ranked) * retrofit_rate_pct / 100.0)))
+    budget_cap_n = max(0, int(budget_cap_gbp // max(cost_per_lsoa_gbp, 1.0)))
+    funded_n = min(len(ranked), rate_cap, budget_cap_n)
+    funded = ranked.head(funded_n)
+
+    scenario = apply_epc_uplift(funded, epc_uplift_bands)
+    spent = funded_n * cost_per_lsoa_gbp
+    mean_pri = (
+        float(pd.to_numeric(funded[score_col], errors="coerce").mean()) if funded_n else None
+    )
+
+    return {
+        "funded_count": funded_n,
+        "budget_spent_gbp": spent,
+        "budget_remaining_gbp": max(0.0, budget_cap_gbp - spent),
+        "mean_priority_funded": mean_pri,
+        "fp_proxy_before": int(scenario["fp_proxy_before"].sum()) if funded_n else 0,
+        "fp_proxy_after": int(scenario["fp_proxy_after"].sum()) if funded_n else 0,
+        "funded_codes": funded["lsoa21cd"].astype(str).tolist(),
+        "cost_per_lsoa_gbp": cost_per_lsoa_gbp,
+        "retrofit_rate_pct": retrofit_rate_pct,
+        "budget_cap_gbp": budget_cap_gbp,
+    }

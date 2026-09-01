@@ -66,7 +66,20 @@ def _combine_maximization(score_matrix: np.ndarray) -> np.ndarray:
 
 def _to_numpy(X: ArrayLike) -> tuple[np.ndarray, Optional[Sequence[str]], Optional[Any]]:
     if pd is not None and isinstance(X, pd.DataFrame):
-        return X.to_numpy(dtype=float), list(X.columns), X.index
+        numeric = X.select_dtypes(include=[np.number])
+        if numeric.shape[1] == 0:
+            raise ValueError("Feature matrix has no numeric columns for anomaly detection.")
+        if numeric.shape[1] < X.shape[1]:
+            dropped = [c for c in X.columns if c not in numeric.columns]
+            if dropped:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "Dropped %s non-numeric columns before scoring: %s",
+                    len(dropped),
+                    dropped[:5],
+                )
+        return numeric.to_numpy(dtype=float), list(numeric.columns), X.index
     arr = check_array(X, dtype=np.float64)
     return arr, None, None
 

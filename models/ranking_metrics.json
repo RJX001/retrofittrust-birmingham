@@ -1,0 +1,27 @@
+{
+  "data_source": "quality_flagged:quality_flagged.parquet",
+  "input_rows": 8000,
+  "train_rows": 7984,
+  "lsoa_export_rows": 660,
+  "flagged_rate_in_train": 0.531125,
+  "cv_rmse": 0.007899266442674833,
+  "cv_rmse_std": 0.0002715214741267555,
+  "cv_mae": 0.004445149451438499,
+  "cv_r2": 0.9962382847893464,
+  "cv_r2_std": 0.00025923098030013246,
+  "baseline_rf_cv_rmse": 0.01436124302952357,
+  "baseline_rf_cv_r2": 0.9875556305687709,
+  "n_features": 2362,
+  "shap_beeswarm": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\reports\\figures\\shap_beeswarm.png",
+  "shap_bar": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\reports\\figures\\shap_bar.png",
+  "shap_waterfall_saved": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\reports\\figures\\shap_waterfall_E01009393.png",
+  "retrofit_scores_csv": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\data\\processed\\retrofit_scores.csv",
+  "retrofit_scores_parquet": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\data\\processed\\retrofit_scores.parquet",
+  "target_formula": "0.6 * normalised_epc_gap + 0.4 * normalised_imd_income (config defaults)",
+  "model_path": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\models\\ranking_model.joblib",
+  "weight_sensitivity_json": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\models\\ranking_weight_sensitivity.json",
+  "face_validity_json": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\models\\ranking_face_validity.json",
+  "face_validity_notes": [
+    "Of the 10 most IMD-deprived LSOAs (lowest decile), 10 sit at or above the cohort median priority score (0.449)."
+  ]
+}

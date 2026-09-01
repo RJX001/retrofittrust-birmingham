@@ -84,6 +84,7 @@ try:
     from retrofittrust.quality.screen import (
         load_flagged_dataset,
         load_quality_screen,
+        load_screening_input,
         run_quality_screen,
     )
 
@@ -97,6 +98,7 @@ try:
         "evt_gpd_threshold",
         "mean_sigma_threshold",
         "run_quality_screen",
+        "load_screening_input",
         "load_flagged_dataset",
         "load_quality_screen",
     ]
@@ -112,3 +114,4 @@ except ImportError:
     run_quality_screen = None  # type: ignore[misc, assignment]
     load_flagged_dataset = None  # type: ignore[misc, assignment]
     load_quality_screen = None  # type: ignore[misc, assignment]
+    load_screening_input = None  # type: ignore[misc, assignment]

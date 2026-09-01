@@ -243,63 +243,112 @@ def list_data_files(
     return sorted(found)
 
 
+def _nomis_header_skiprows(path: Path, encoding: str) -> int | None:
+    """Return skiprows when a Nomis preamble precedes Area/mnemonic headers."""
+    try:
+        with path.open(encoding=encoding, errors="replace") as handle:
+            for idx, line in enumerate(handle):
+                if idx > 30:
+                    break
+                lowered = line.strip().lower()
+                if lowered.startswith('"area"') or lowered.startswith("area,"):
+                    return idx
+                if '"area"' in lowered and "mnemonic" in lowered:
+                    return idx
+    except OSError:
+        return None
+    return None
+
+
+def _looks_like_nomis_table(df: pd.DataFrame) -> bool:
+    cols = {snake_case(str(c)) for c in df.columns}
+    return "area" in cols and "mnemonic" in cols
+
+
 def read_csv_flexible(path: Path, **kwargs) -> pd.DataFrame:
     """Read a CSV, trying common encodings and Nomis-style metadata headers.
 
     Nomis wizard downloads often prepend title rows before the real header.
     We try skiprows 0..25 until a plausible header with an LSOA-like column
-    appears; if none does, we return the skiprows=0 read.
+    or Nomis ``Area`` / ``mnemonic`` columns appears.
     """
     encodings = ("utf-8", "utf-8-sig", "cp1252", "latin-1")
     last_error: Exception | None = None
-    raw: pd.DataFrame | None = None
     used_encoding = "utf-8"
+    kwargs = dict(kwargs)
 
     for enc in encodings:
+        used_encoding = enc
+        nomis_skip = _nomis_header_skiprows(path, enc)
+        if nomis_skip is not None:
+            try:
+                trial = pd.read_csv(
+                    path,
+                    encoding=enc,
+                    low_memory=False,
+                    skiprows=nomis_skip,
+                    **kwargs,
+                )
+                if not trial.empty and (
+                    detect_lsoa_column(trial) is not None or _looks_like_nomis_table(trial)
+                ):
+                    logger.info(
+                        "Read %s with encoding=%s, skiprows=%s (Nomis-style header)",
+                        path.name,
+                        enc,
+                        nomis_skip,
+                    )
+                    return trial
+            except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError) as exc:
+                last_error = exc
+
         try:
             raw = pd.read_csv(path, encoding=enc, low_memory=False, **kwargs)
-            used_encoding = enc
-            last_error = None
-            break
         except UnicodeDecodeError as exc:
             last_error = exc
             continue
-    if raw is None:
-        raise last_error or RuntimeError(f"Could not read {path}")
+        except pd.errors.ParserError:
+            raw = None
+        else:
+            if detect_lsoa_column(raw) is not None or _looks_like_nomis_table(raw):
+                logger.debug(
+                    "Read %s with encoding=%s (header on row 0)", path.name, enc
+                )
+                return raw
 
-    if detect_lsoa_column(raw) is not None:
-        logger.debug("Read %s with encoding=%s (header on row 0)", path.name, used_encoding)
-        return raw
+        # Nomis / ONS downloads with metadata rows above the header.
+        for skip in range(1, 26):
+            try:
+                trial = pd.read_csv(
+                    path, encoding=enc, low_memory=False, skiprows=skip, **kwargs
+                )
+            except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError):
+                continue
+            if trial.empty or trial.shape[1] < 2:
+                continue
+            unnamed = sum(str(c).startswith("Unnamed") for c in trial.columns)
+            if unnamed / max(len(trial.columns), 1) > 0.5:
+                continue
+            if detect_lsoa_column(trial) is not None or _looks_like_nomis_table(trial):
+                logger.info(
+                    "Read %s with encoding=%s, skiprows=%s (Nomis-style header)",
+                    path.name,
+                    enc,
+                    skip,
+                )
+                return trial
 
-    # Nomis / ONS downloads with metadata rows above the header.
-    for skip in range(1, 26):
-        try:
-            trial = pd.read_csv(
-                path, encoding=used_encoding, low_memory=False, skiprows=skip, **kwargs
-            )
-        except (pd.errors.EmptyDataError, pd.errors.ParserError):
-            continue
-        if trial.empty or trial.shape[1] < 2:
-            continue
-        unnamed = sum(str(c).startswith("Unnamed") for c in trial.columns)
-        if unnamed / max(len(trial.columns), 1) > 0.5:
-            continue
-        if detect_lsoa_column(trial) is not None:
-            logger.info(
-                "Read %s with encoding=%s, skiprows=%s (Nomis-style header)",
+        # Last resort for this encoding: return row-0 parse if it succeeded.
+        if raw is not None:
+            logger.warning(
+                "Read %s with encoding=%s but could not detect an LSOA column; "
+                "returning the first-header parse",
                 path.name,
-                used_encoding,
-                skip,
+                enc,
             )
-            return trial
+            return raw
 
-    logger.warning(
-        "Read %s with encoding=%s but could not detect an LSOA column; "
-        "returning the first-header parse",
-        path.name,
-        used_encoding,
-    )
-    return raw
+    raise last_error or RuntimeError(f"Could not read {path}")
 
 
 def read_table(path: Path) -> pd.DataFrame:

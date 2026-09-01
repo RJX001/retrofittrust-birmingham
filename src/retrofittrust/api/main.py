@@ -276,6 +276,7 @@ def ledger_append(payload: LedgerAppendRequest) -> LedgerAppendResponse:
         data = {
             "type": payload.event_type,
             "lsoa": payload.lsoa21cd,
+            "lsoa_code": payload.lsoa21cd,
             "label": SYNTHETIC_LABEL,
             **details,
         }

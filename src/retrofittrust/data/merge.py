@@ -77,7 +77,10 @@ def _attach(
 
     before = len(left)
     flag = f"{right_name}_matched"
+    prior_attrs = dict(getattr(left, "attrs", {}))
+    join_steps = list(prior_attrs.pop("join_steps", []))
     merged = left.merge(slim, on=JOIN_KEY, how="left", indicator=True)
+    merged.attrs.update(prior_attrs)
     if len(merged) != before:
         logger.error(
             "Join to %s changed row count %s -> %s (expected left join to preserve rows). "
@@ -102,6 +105,15 @@ def _attach(
         f"{slim[JOIN_KEY].nunique():,}",
     )
     merged[flag] = merged["_merge"].eq("both")
+    step = {
+        "join": f"epc_left_join_{right_name}",
+        "join_key": JOIN_KEY,
+        "rows_before": before,
+        "rows_after": len(merged),
+        "matched": n_matched,
+        "unmatched_left": n_unmatched,
+        "right_unique_lsoa": int(slim[JOIN_KEY].nunique()),
+    }
     merged = merged.drop(columns=["_merge"])
     if n_unmatched:
         logger.warning(
@@ -112,6 +124,8 @@ def _attach(
             right_name,
             flag,
         )
+    join_steps.append(step)
+    merged.attrs["join_steps"] = join_steps
     return merged
 
 
@@ -226,7 +240,7 @@ def build_merged_dataset(
     rather than aborting the tabular merge (the choropleth needs it later).
     """
     ensure_logging()
-    epc = load_epc(raw_dir=raw_dir)
+    epc = load_epc(raw_dir=raw_dir, external_dir=external_dir)
     imd = load_imd(raw_dir=raw_dir)
     census = load_census(raw_dir=raw_dir)
 

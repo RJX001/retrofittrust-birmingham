@@ -22,7 +22,13 @@ from .features import (
     select_feature_columns,
 )
 from .predict import load_ranking_model, rank_lsoas, score_records
-from .train import DEFAULT_MODEL_PATH, run_ranking_training, train_ranking_model
+from .train import (
+    DEFAULT_MODEL_PATH,
+    build_consumer_table,
+    load_training_frame,
+    run_ranking_training,
+    train_ranking_model,
+)
 
 SEED = 42
 
@@ -32,6 +38,8 @@ __all__ = [
     "TARGET_COLUMN",
     "train_ranking_model",
     "run_ranking_training",
+    "load_training_frame",
+    "build_consumer_table",
     "score_records",
     "rank_lsoas",
     "load_ranking_model",

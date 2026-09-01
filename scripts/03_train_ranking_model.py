@@ -2,8 +2,9 @@
 """
 Checkpoint 3 — LightGBM ranking model + SHAP (CURSOR_BUILD_SPEC §8.3).
 
-Trains gradient-boosted tree ranker on quality-screened data. Flagged records
-receive down-weighted sample weights (quarantine — not silent deletion).
+Trains gradient-boosted tree ranker on quality-screened data when available.
+Falls back to merged / EPC+IMD / labelled synthetic data with a logged warning.
+Flagged records receive down-weighted sample weights (quarantine — not silent deletion).
 Reports cross-validated performance and saves serialised model to models/.
 """
 
@@ -27,6 +28,10 @@ from retrofittrust.config import (  # noqa: E402
     SEED,
 )
 from retrofittrust.modeling import run_ranking_training  # noqa: E402
+from retrofittrust.modeling.train import (  # noqa: E402
+    DEFAULT_MODEL_PATH,
+    RETROFIT_SCORES_CSV,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +41,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 FLAGGED_INPUT = DATA_PROCESSED / "quality_flagged.parquet"
-RANKING_MODEL = MODELS_DIR / "lgbm_ranker.joblib"
 
 
 def _ensure_dirs() -> None:
@@ -50,13 +54,21 @@ def _print_checkpoint(metrics: dict) -> None:
     logger.info("CHECKPOINT 3 — LightGBM ranking model + SHAP")
     logger.info("=" * 60)
 
+    data_source = metrics.get("data_source")
+    if data_source:
+        logger.info("  %-28s %s", "data source:", data_source)
+
     input_rows = metrics.get("input_rows")
     if input_rows is not None:
-        logger.info("  %-28s %s rows", "input (flagged):", f"{input_rows:,}")
+        logger.info("  %-28s %s rows", "input rows:", f"{input_rows:,}")
 
     train_rows = metrics.get("train_rows")
     if train_rows is not None:
         logger.info("  %-28s %s rows", "training rows:", f"{train_rows:,}")
+
+    lsoa_rows = metrics.get("lsoa_export_rows")
+    if lsoa_rows is not None:
+        logger.info("  %-28s %s LSOAs", "consumer export:", f"{lsoa_rows:,}")
 
     flagged_in_train = metrics.get("flagged_rate_in_train")
     if flagged_in_train is not None:
@@ -65,19 +77,38 @@ def _print_checkpoint(metrics: dict) -> None:
     cv_rmse = metrics.get("cv_rmse")
     cv_r2 = metrics.get("cv_r2")
     if cv_rmse is not None:
-        logger.info("  %-28s %.4f", "CV RMSE:", cv_rmse)
+        std = metrics.get("cv_rmse_std")
+        if std is not None:
+            logger.info("  %-28s %.4f ± %.4f", "CV RMSE:", cv_rmse, std)
+        else:
+            logger.info("  %-28s %.4f", "CV RMSE:", cv_rmse)
     if cv_r2 is not None:
         logger.info("  %-28s %.4f", "CV R²:", cv_r2)
 
-    shap_sample = metrics.get("shap_waterfall_saved")
-    if shap_sample is not None:
-        logger.info("  %-28s %s", "SHAP waterfall saved:", shap_sample)
+    rf_rmse = metrics.get("baseline_rf_cv_rmse")
+    if rf_rmse is not None:
+        logger.info("  %-28s %.4f", "RF baseline CV RMSE:", rf_rmse)
+
+    for label, key in (
+        ("SHAP beeswarm:", "shap_beeswarm"),
+        ("SHAP bar:", "shap_bar"),
+        ("SHAP waterfall:", "shap_waterfall_saved"),
+    ):
+        value = metrics.get(key)
+        if value:
+            logger.info("  %-28s %s", label, value)
+
+    scores_path = metrics.get("retrofit_scores_csv", RETROFIT_SCORES_CSV)
+    logger.info("  %-28s %s", "Scores table:", scores_path)
 
     target_note = metrics.get("target_formula")
     if target_note:
         logger.info("  Target: %s", target_note)
 
-    logger.info("  Model:  %s", RANKING_MODEL)
+    for note in metrics.get("face_validity_notes") or []:
+        logger.info("  Face validity: %s", note)
+
+    logger.info("  Model:  %s", DEFAULT_MODEL_PATH)
     logger.info("=" * 60)
 
 
@@ -88,34 +119,26 @@ def main() -> int:
     logger.info("Starting checkpoint 3 (SEED=%s)", SEED)
 
     if not FLAGGED_INPUT.exists():
-        logger.error(
-            "Quality-flagged dataset not found at %s. "
-            "Run scripts/02_train_quality_screen.py first.",
+        logger.warning(
+            "Quality-flagged dataset not found at %s — "
+            "using fallback loaders (merged / EPC+IMD / synthetic).",
             FLAGGED_INPUT,
         )
-        return 1
 
-    result = run_ranking_training(
-        flagged_path=FLAGGED_INPUT,
+    metrics = run_ranking_training(
+        flagged_path=FLAGGED_INPUT if FLAGGED_INPUT.exists() else None,
         processed_dir=DATA_PROCESSED,
         models_dir=MODELS_DIR,
         reports_dir=REPORTS_FIGURES,
         seed=SEED,
     )
 
-    if isinstance(result, tuple) and len(result) == 2:
-        _model, metrics = result
-    elif isinstance(result, dict):
-        metrics = result
-    else:
-        metrics = getattr(result, "metrics", {}) or {}
-
     _print_checkpoint(metrics)
 
-    if not RANKING_MODEL.exists():
+    if not DEFAULT_MODEL_PATH.exists():
         logger.error(
-            "Ranking model not found at %s. Implement retrofittrust.modeling.train.",
-            RANKING_MODEL,
+            "Ranking model not found at %s. Training did not complete.",
+            DEFAULT_MODEL_PATH,
         )
         return 1
 

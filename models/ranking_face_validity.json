@@ -1,0 +1,10 @@
+{
+  "cohort_lsoa_count": 660,
+  "priority_score_median": 0.44903682210325846,
+  "priority_score_max": 0.5776458808237038,
+  "low_confidence_count": 658,
+  "sanity_notes": [
+    "Of the 10 most IMD-deprived LSOAs (lowest decile), 10 sit at or above the cohort median priority score (0.449)."
+  ],
+  "caveat": "No ground-truth retrofit priority exists; checks are indicative only. IMD is area-level (ecological fallacy)."
+}

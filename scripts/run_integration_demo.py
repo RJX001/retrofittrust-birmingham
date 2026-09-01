@@ -110,31 +110,24 @@ def step1_select_cohort() -> list[str]:
         log.info("Selected via dashboard.cohort.select_demo_cohort: %s", lsoas)
         return list(lsoas)
     except ImportError:
-        log.warning("dashboard.cohort not available — fallback from processed data")
+        log.warning("dashboard.cohort not available — using api.features fallback")
 
-    import pandas as pd
+    from retrofittrust.api.features import load_lsoa_frame
 
-    merged = DATA_PROCESSED / "merged_lsoa.parquet"
-    if not merged.exists():
-        merged = DATA_PROCESSED / "merged_lsoa.csv"
-    if not merged.exists():
-        raise FileNotFoundError(
-            "No cohort module and no data/processed/merged_lsoa.{parquet,csv}. "
-            "Run scripts/01_ingest_and_merge.py first."
+    frame, source = load_lsoa_frame(allow_synthetic_fallback=True)
+    n = min(DEMO_COHORT_LSOA_COUNT, len(frame))
+    if "priority_score" in frame.columns:
+        ranked = frame.sort_values("priority_score", ascending=False)
+        sample = ranked["lsoa21cd"].head(n).astype(str).tolist()
+    else:
+        sample = (
+            frame["lsoa21cd"]
+            .drop_duplicates()
+            .sample(n=n, random_state=SEED)
+            .astype(str)
+            .tolist()
         )
-
-    df = pd.read_parquet(merged) if merged.suffix == ".parquet" else pd.read_csv(merged)
-    lsoa_col = next((c for c in ("lsoa21cd", "LSOA21CD", "lsoa_code") if c in df.columns), None)
-    if lsoa_col is None:
-        raise ValueError(f"No LSOA column found in {merged}")
-
-    sample = (
-        df[lsoa_col]
-        .drop_duplicates()
-        .sample(n=min(DEMO_COHORT_LSOA_COUNT, df[lsoa_col].nunique()), random_state=SEED)
-        .tolist()
-    )
-    log.info("Fallback cohort (random sample, seed=%s): %s", SEED, sample)
+    log.info("Fallback cohort from %s (seed=%s): %s", source, SEED, sample)
     return sample
 
 
@@ -159,8 +152,12 @@ def step2_rank_and_explain(lsoas: list[str], use_api: bool, base_url: str) -> di
 
     try:
         rank_result = rank_lsoas(lsoa_codes=lsoas)
-    except FileNotFoundError:
-        log.warning("No processed training data — using composite LSOA frame fallback")
+    except Exception as exc:  # noqa: BLE001 — demo must fall back on corrupt/missing artefacts
+        log.warning("rank_lsoas failed (%s) — using composite LSOA frame fallback", exc)
+        rank_result = None
+    if rank_result is None:
+        log.warning("Using composite LSOA frame fallback for ranking")
+    if rank_result is None:
         from retrofittrust.api.features import load_lsoa_frame, load_model_bundle, predict_priority
 
         frame, source = load_lsoa_frame(allow_synthetic_fallback=True)
@@ -187,7 +184,7 @@ def step2_rank_and_explain(lsoas: list[str], use_api: bool, base_url: str) -> di
     top_lsoa = rank_result.get("top_lsoa") or lsoas[0]
     try:
         explain_result = explain_lsoa(lsoa_code=top_lsoa)
-    except (FileNotFoundError, ValueError):
+    except Exception:  # noqa: BLE001 — fall back to composite SHAP when model artefact unavailable
         from retrofittrust.api.features import load_lsoa_frame, load_model_bundle, shap_for_row
 
         frame, _ = load_lsoa_frame(allow_synthetic_fallback=True)
@@ -251,6 +248,50 @@ def step3_append_decision(
     from retrofittrust.ledger.twin_state import apply_ledger_event
 
     apply_ledger_event("eligibility", lsoa, block_data, ledger_index=int(block["index"]))
+    log.info("Block #%s appended; chain verify=%s", block["index"], ledger.verify_chain()[0])
+    return block
+
+
+# --- Step 3b: synthetic works-claimed append -----------------------------------------
+
+
+def step3b_append_works_claimed(lsoa: str, use_api: bool, base_url: str) -> dict:
+    _banner(f"STEP 3b — Ledger append works claimed [{SYNTHETIC_LABEL}]")
+
+    try:
+        from retrofittrust.ledger.synthetic import synthetic_works_claimed_block
+
+        block_data = synthetic_works_claimed_block(lsoa=lsoa)
+    except ImportError:
+        block_data = {
+            "type": "works_claimed",
+            "lsoa": lsoa,
+            "lsoa_code": lsoa,
+            "grant_reference": f"SYNTH-GRANT-{lsoa}",
+            "label": SYNTHETIC_LABEL,
+            "note": "Simulated works-claimed record — not a real installer invoice",
+        }
+
+    log.info("Appending works_claimed block: %s", json.dumps(block_data, sort_keys=True))
+
+    if use_api:
+        result = _http_post(
+            base_url,
+            "/ledger/append",
+            {
+                "event_type": "works_claimed",
+                "lsoa21cd": lsoa,
+                "generate_synthetic": True,
+            },
+        )
+        log.info("Works-claimed append response: %s", result)
+        return result
+
+    ledger = _get_ledger()
+    block = ledger.append_block(block_data)
+    from retrofittrust.ledger.twin_state import apply_ledger_event
+
+    apply_ledger_event("works_claimed", lsoa, block_data, ledger_index=int(block["index"]))
     log.info("Block #%s appended; chain verify=%s", block["index"], ledger.verify_chain()[0])
     return block
 
@@ -384,10 +425,13 @@ def main() -> int:
     top_lsoa, top_score = _extract_top_lsoa(ai["rank"], lsoas)
     log.info("Prioritised LSOA: %s (score=%.4f)", top_lsoa, top_score)
 
-    # Step 3
+    # Step 3 — eligibility prioritisation
     step3_append_decision(top_lsoa, top_score, use_api=use_api, base_url=args.api_base)
 
-    # Step 4
+    # Step 3b — synthetic works claimed (eligibility → works → verification)
+    step3b_append_works_claimed(top_lsoa, use_api=use_api, base_url=args.api_base)
+
+    # Step 4 — verification outcome
     verification_block = step4_append_verification(
         top_lsoa, use_api=use_api, base_url=args.api_base
     )

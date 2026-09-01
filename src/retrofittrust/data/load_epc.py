@@ -35,7 +35,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..config import BIRMINGHAM_LA, DATA_RAW, SEED
+from ..config import BIRMINGHAM_LA, DATA_EXTERNAL, DATA_RAW, SEED
 from ._utils import (
     BIRMINGHAM_LAD_CODE,
     SKIP_RAW_DIR_PARTS,
@@ -45,6 +45,8 @@ from ._utils import (
     list_data_files,
     log_row_count,
     looks_like_birmingham,
+    normalise_lsoa_code,
+    read_table,
     snake_case_columns,
     standardise_lsoa_key,
 )
@@ -295,7 +297,95 @@ def _read_one_epc_file(
     return df.loc[_la_mask(df, local_authority)].copy()
 
 
-def _finalise_epc(df: pd.DataFrame, source: str) -> pd.DataFrame:
+def _normalise_postcode(series: pd.Series) -> pd.Series:
+    """Canonical UK postcode string (uppercase, single space before inward code)."""
+    s = series.astype("string").str.strip().str.upper()
+    s = s.str.replace(r"\s+", " ", regex=True)
+    # Insert space before inward code when missing (e.g. B459SQ -> B45 9SQ).
+    needs_space = s.str.match(r"^[A-Z]{1,2}\d[A-Z0-9]?\d[A-Z]{2}$", na=False)
+    if needs_space.any():
+        s = s.where(
+            ~needs_space,
+            s.str.slice(0, -3) + " " + s.str.slice(-3),
+        )
+    return s
+
+
+def _load_postcode_lsoa_lookup(external_dir: Path | None = None) -> pd.DataFrame | None:
+    """Read ``postcode_lsoa_lookup.csv`` if present under ``data/external``."""
+    external_dir = Path(external_dir) if external_dir is not None else DATA_EXTERNAL
+    for name in ("postcode_lsoa_lookup.csv", "pcd_lsoa_lookup.csv"):
+        path = external_dir / name
+        if path.exists():
+            lookup = read_table(path)
+            lookup = snake_case_columns(lookup)
+            pc_col = find_column(lookup.columns, "postcode", "pcd", "pcds")
+            lsoa_col = find_column(lookup.columns, "lsoa21cd", "lsoa_code_2021", "lsoa21")
+            if pc_col is None or lsoa_col is None:
+                logger.warning(
+                    "%s is missing postcode or lsoa21cd columns; skipping enrichment.",
+                    path.name,
+                )
+                return None
+            slim = lookup[[pc_col, lsoa_col]].drop_duplicates(subset=[pc_col], keep="first")
+            slim = slim.rename(columns={pc_col: "postcode", lsoa_col: "lsoa21cd"})
+            slim["postcode"] = _normalise_postcode(slim["postcode"])
+            slim["lsoa21cd"] = normalise_lsoa_code(slim["lsoa21cd"])
+            logger.info(
+                "Postcode→LSOA lookup: %s rows from %s",
+                f"{len(slim):,}",
+                path.name,
+            )
+            return slim
+    return None
+
+
+def _enrich_lsoa_from_postcode(
+    df: pd.DataFrame,
+    *,
+    external_dir: Path | None = None,
+    source: str,
+) -> pd.DataFrame:
+    """Fill missing ``lsoa21cd`` from ``data/external/postcode_lsoa_lookup.csv``."""
+    if "lsoa21cd" not in df.columns:
+        return df
+    missing = df["lsoa21cd"].isna()
+    if not missing.any():
+        return df
+    pc_col = find_column(df.columns, "postcode", "post_code", "pcd")
+    if pc_col is None:
+        logger.warning(
+            "%s: %s rows missing lsoa21cd and no postcode column for lookup.",
+            source,
+            f"{int(missing.sum()):,}",
+        )
+        return df
+
+    lookup = _load_postcode_lsoa_lookup(external_dir)
+    if lookup is None:
+        return df
+
+    out = df.copy()
+    out["_postcode_norm"] = _normalise_postcode(out[pc_col])
+    pc_to_lsoa = lookup.set_index("postcode")["lsoa21cd"]
+    mapped = out["_postcode_norm"].map(pc_to_lsoa)
+    n_before = int(missing.sum())
+    out["lsoa21cd"] = out["lsoa21cd"].fillna(mapped)
+    recovered = int((missing & mapped.notna()).sum())
+    still_missing = int(out["lsoa21cd"].isna().sum())
+    out = out.drop(columns=["_postcode_norm"])
+    logger.info(
+        "%s: recovered %s / %s missing lsoa21cd via postcode lookup "
+        "(%s still unmatched)",
+        source,
+        f"{recovered:,}",
+        f"{n_before:,}",
+        f"{still_missing:,}",
+    )
+    return out
+
+
+def _finalise_epc(df: pd.DataFrame, source: str, external_dir: Path | None = None) -> pd.DataFrame:
     if df.empty:
         return df
     out = snake_case_columns(df)
@@ -311,6 +401,7 @@ def _finalise_epc(df: pd.DataFrame, source: str) -> pd.DataFrame:
             source,
             list(out.columns)[:30],
         )
+    out = _enrich_lsoa_from_postcode(out, external_dir=external_dir, source=source)
     log_row_count(source, len(out), unique_lsoa=out["lsoa21cd"].nunique() if "lsoa21cd" in out.columns else "n/a")
     return out
 
@@ -319,6 +410,7 @@ def load_epc(
     raw_dir: Path | None = None,
     local_authority: str | None = None,
     chunksize: int = DEFAULT_CHUNKSIZE,
+    external_dir: Path | None = None,
 ) -> pd.DataFrame:
     """Load domestic EPCs from ``data/raw`` and filter to Birmingham.
 
@@ -377,4 +469,4 @@ def load_epc(
         if dropped:
             logger.info("Dropped %s duplicate LMK_KEY rows", f"{dropped:,}")
 
-    return _finalise_epc(combined, source="load_epc")
+    return _finalise_epc(combined, source="load_epc", external_dir=external_dir)

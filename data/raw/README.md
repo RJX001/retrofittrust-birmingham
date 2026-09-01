@@ -90,7 +90,28 @@ data/external/lsoa_birmingham.geojson
 
 Then, from the project root with `src` on `PYTHONPATH`:
 
-```python
-from retrofittrust.data import run_ingest
-df = run_ingest()
+```bash
+python scripts/01_ingest_and_merge.py
 ```
+
+Outputs: `data/processed/merged_lsoa.parquet`, `data/processed/join_audit.json`, and interim parquet under `data/interim/`.
+
+---
+
+## Actual files in this workspace (messy names accepted)
+
+The loaders discover files by content and name tokens — you do **not** have to rename downloads if they match one of the patterns below.
+
+| File (as saved) | Used for | Notes |
+|---|---|---|
+| `epc_birmingham/certificates.parquet` | EPC certificates | Preferred; includes `lsoa21cd` + `postcode` |
+| `EPC.csv`, `energy_certficates.csv` | EPC (duplicate CSVs) | Birmingham LA-filtered; use parquet if present |
+| `reccomendations.csv` | EPC recommendations | **Not** merged in checkpoint 1 |
+| `imd2025/imd2025_lsoa.csv` | IMD 2025 Birmingham | Rank/decile extract (Income Score rate absent — rank proxy used) |
+| `imd2025_birmingham.csv` | — | Misnamed recommendations file; ignored by `load_imd()` |
+| `census/ts054_tenure.csv` | Census TS054 tenure | Nomis national LSOA export; Birmingham rows filtered in code |
+| `ts054_tenure.csv` (raw root) | — | Misnamed IMD subset; skipped by census loader |
+| `ts046_central_heating.csv` | — | Duplicate of TS054 in this workspace; deduplicated by file size |
+| `data/external/postcode_lsoa_lookup.csv` | Postcode → LSOA | Fills missing EPC `lsoa21cd` where lookup has a code |
+
+**Missing for maps:** `data/external/lsoa_birmingham.geojson` (ONS 2021 LSOA BGC). Tabular merge runs without it; the Streamlit choropleth needs it later.

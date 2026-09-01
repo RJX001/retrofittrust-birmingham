@@ -36,6 +36,14 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def block_lsoa_code(data: dict[str, Any]) -> str | None:
+    """Resolve LSOA from ledger event data (``lsoa_code`` or legacy ``lsoa``)."""
+    if not isinstance(data, dict):
+        return None
+    code = data.get("lsoa_code") or data.get("lsoa")
+    return str(code) if code is not None else None
+
+
 class Ledger:
     """Append-only hash-chain persisted as JSON at ``config.LEDGER_PATH``."""
 

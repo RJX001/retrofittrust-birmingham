@@ -72,11 +72,20 @@ _EXCLUDE_EXACT = frozenset(
         QUALITY_CONFIDENCE_COLUMN,
         "target",
         "y",
+        "epc_gap",
+        "epc_gap_norm",
+        "imd_income_norm",
         "predicted_priority",
         "priority_rank",
         "low_confidence_caveat",
         "caveat_note",
         "shap_base_value",
+        "ae_score",
+        "iforest_score",
+        "consensus_score",
+        "union_score",
+        "is_quality_screen_fallback",
+        "data_quality_label",
         *ID_COLUMNS,
         *QUALITY_FLAG_COLUMNS,
     }
@@ -86,6 +95,7 @@ _EXCLUDE_PREFIXES = (
     "predicted_",
     "shap_",
     "caveat",
+    "recon_err_",
 )
 
 # Preferred EPC numeric fields after snake_case preprocess.
@@ -202,6 +212,46 @@ CENSUS_HEATING_EXACT = (
 
 MISSINGNESS_SUFFIX = "_missing"
 MISSINGNESS_PREFIX = "missing_"
+
+# LightGBM rejects JSON-special characters in feature names.
+_LGBM_NAME_BAD = str.maketrans({
+    "{": "_",
+    "}": "_",
+    "[": "_",
+    "]": "_",
+    ":": "_",
+    ",": "_",
+    '"': "_",
+    "'": "_",
+    " ": "_",
+    "/": "_",
+    "\\": "_",
+})
+
+
+def _sanitize_feature_name(name: str) -> str:
+    cleaned = str(name).translate(_LGBM_NAME_BAD)
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "feature"
+
+
+def _sanitize_feature_frame(X: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with LightGBM-safe, unique column names."""
+    mapping: dict[str, str] = {}
+    used: set[str] = set()
+    for col in X.columns:
+        base = _sanitize_feature_name(col)
+        candidate = base
+        suffix = 1
+        while candidate in used:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        mapping[col] = candidate
+        used.add(candidate)
+    if mapping and any(a != b for a, b in mapping.items()):
+        return X.rename(columns=mapping)
+    return X
 
 # Assumed: flagged records keep a non-zero weight so they are not silently
 # excluded (CURSOR_BUILD_SPEC §4 downstream handling). Matches quality.flags.
@@ -320,7 +370,7 @@ def to_model_matrix(
         bool_cols = X.select_dtypes(include=["bool", "boolean"]).columns
         for name in bool_cols:
             X[name] = X[name].astype("float64")
-        return X.apply(pd.to_numeric, errors="coerce").astype("float64")
+        return _sanitize_feature_frame(X.apply(pd.to_numeric, errors="coerce").astype("float64"))
 
     if source_columns is not None:
         cols = [c for c in source_columns if c in df.columns]
@@ -347,7 +397,8 @@ def to_model_matrix(
     else:
         X = X.dropna(axis=1, how="all")
 
-    return X.astype("float64")
+    X = _sanitize_feature_frame(X.astype("float64"))
+    return X
 
 
 def prepare_feature_frame(

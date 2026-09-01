@@ -1,0 +1,30 @@
+{
+  "default_weights": {
+    "epc_gap": 0.6,
+    "imd_income": 0.4
+  },
+  "note": "Sensitivity on the composite target formula only \u2014 not retraining separate model families. Spearman compares LSOA rank order.",
+  "scenarios": [
+    {
+      "epc_gap_weight": 0.5,
+      "imd_income_weight": 0.5,
+      "spearman_rank_vs_default": 0.983,
+      "top_10_overlap_fraction": 0.8,
+      "mean_score_shift": 0.033
+    },
+    {
+      "epc_gap_weight": 0.6,
+      "imd_income_weight": 0.4,
+      "spearman_rank_vs_default": 1.0,
+      "top_10_overlap_fraction": 1.0,
+      "mean_score_shift": 0.0
+    },
+    {
+      "epc_gap_weight": 0.7,
+      "imd_income_weight": 0.3,
+      "spearman_rank_vs_default": 0.9804,
+      "top_10_overlap_fraction": 1.0,
+      "mean_score_shift": 0.033
+    }
+  ]
+}

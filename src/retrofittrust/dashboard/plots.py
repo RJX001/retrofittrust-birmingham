@@ -45,10 +45,58 @@ def choropleth_priority(
         coloraxis_colorbar=dict(title="Priority"),
     )
     if selected:
-        fig.update_traces(
-            marker_line_width=1,
-            selector=dict(type="choroplethmapbox"),
+        sel = work[work["lsoa21cd"].astype(str).isin([str(s) for s in selected])]
+        if not sel.empty:
+            fig.add_trace(
+                go.Choroplethmapbox(
+                    geojson=geojson,
+                    locations=sel["lsoa21cd"],
+                    z=[1] * len(sel),
+                    featureidkey=featureidkey,
+                    colorscale=[[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,0)"]],
+                    showscale=False,
+                    marker_line_width=2.5,
+                    marker_line_color="#1a1a1a",
+                    hoverinfo="skip",
+                    name="Selected cohort",
+                )
+            )
+    return fig
+
+
+def bar_priority_fallback(
+    df: pd.DataFrame,
+    *,
+    color_col: str = "priority_display",
+    selected: list[str] | None = None,
+    top_n: int = 25,
+) -> go.Figure:
+    """Sortable bar fallback when ONS GeoJSON is absent."""
+    work = df.copy()
+    if color_col not in work.columns:
+        color_col = "priority_score" if "priority_score" in work.columns else work.columns[-1]
+    work = work.sort_values(color_col, ascending=False).head(top_n)
+    work["label"] = work.apply(
+        lambda r: f"{r.get('lsoa21cd', '')} — {str(r.get('lsoa21nm', '') or '')[:28]}",
+        axis=1,
+    )
+    colours = ["#E45756" if str(c) in {str(s) for s in (selected or [])} else "#4C78A8" for c in work["lsoa21cd"]]
+    fig = go.Figure(
+        go.Bar(
+            x=pd.to_numeric(work[color_col], errors="coerce"),
+            y=work["label"],
+            orientation="h",
+            marker_color=colours,
+            hovertemplate="%{y}<br>Priority: %{x:.3f}<extra></extra>",
         )
+    )
+    fig.update_layout(
+        height=max(320, 22 * len(work) + 80),
+        margin=dict(l=20, r=20, t=30, b=20),
+        title="Priority ranking (table fallback — no ONS GeoJSON)",
+        xaxis_title="Retrofit priority score",
+        yaxis=dict(autorange="reversed"),
+    )
     return fig
 
 

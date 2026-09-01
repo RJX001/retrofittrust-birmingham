@@ -57,7 +57,19 @@ python scripts/run_integration_demo.py --force-direct
 python scripts/demo_tampering.py
 ```
 
-Steps executed: cohort selection → `/rank` + `/explain` → ledger eligibility → synthetic verification append → SQLite write-back → twin state check.
+Steps executed: cohort selection → `/rank` + `/explain` → ledger eligibility → works claimed → synthetic verification → SQLite write-back → twin state check.
+
+See also:
+
+- [`integration/README.md`](integration/README.md) — viva walkthrough, screenshots, troubleshooting
+- [`docs/data-flow-diagram.md`](docs/data-flow-diagram.md) — mermaid data flow (matches code)
+- [`docs/architecture-diagram.md`](docs/architecture-diagram.md) — Streamlit ↔ FastAPI ↔ LightGBM/SHAP ↔ ledger ↔ SQLite
+
+Run unit/integration tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Licence
 

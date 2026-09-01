@@ -26,6 +26,11 @@ def _rng(seed: int | None = None) -> random.Random:
     return random.Random(SEED if seed is None else seed)
 
 
+def _lsoa_fields(lsoa: str) -> dict[str, str]:
+    """Both ``lsoa`` and ``lsoa_code`` for dashboard/API joins."""
+    return {"lsoa": lsoa, "lsoa_code": lsoa}
+
+
 def synthetic_eligibility_block(
     *,
     lsoa: str,
@@ -36,7 +41,7 @@ def synthetic_eligibility_block(
     award = rng.randint(*_AWARD_GBP_RANGE)
     return {
         "type": "eligibility",
-        "lsoa": lsoa,
+        **_lsoa_fields(lsoa),
         "priority_score": float(priority_score),
         "grant_reference": f"SYNTH-GRANT-{lsoa}",
         "estimated_award_gbp": award,
@@ -61,7 +66,7 @@ def synthetic_works_claimed_block(
     )
     return {
         "type": "works_claimed",
-        "lsoa": lsoa,
+        **_lsoa_fields(lsoa),
         "grant_reference": grant_reference or f"SYNTH-GRANT-{lsoa}",
         "claimed_cost_gbp": cost,
         "measures": measures,
@@ -80,7 +85,7 @@ def synthetic_verification_block(
     rng = _rng(seed)
     return {
         "type": "verification",
-        "lsoa": lsoa,
+        **_lsoa_fields(lsoa),
         "epc_uplift_bands": int(epc_uplift_bands),
         "verified_by": "SYNTHETIC INSPECTOR",
         "outcome": "pass",

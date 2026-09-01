@@ -376,6 +376,7 @@ def multi_seed_stability(
     from retrofittrust.quality.ensemble import DataQualityScreen
 
     kwargs = dict(screen_kwargs or {})
+    kwargs.pop("random_state", None)
     kwargs.setdefault("flag_mode", flag_mode)
     flag_col = "flagged_union" if flag_mode == "union" else "flagged_consensus"
 

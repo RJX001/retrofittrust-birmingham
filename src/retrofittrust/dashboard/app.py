@@ -25,12 +25,14 @@ from retrofittrust.config import DEMO_COHORT_LSOA_COUNT, SQLITE_PATH
 from retrofittrust.dashboard.cohort import select_demo_cohort
 from retrofittrust.dashboard.data_loader import (
     apply_epc_uplift,
+    build_lsoa_detail,
     load_geometries,
     load_lsoa_dataset,
     merge_twin_state,
+    whatif_budget_projection,
 )
-from retrofittrust.dashboard.plots import choropleth_priority, shap_waterfall
-from retrofittrust.dashboard.state import db_mtime_token, init_twin_db
+from retrofittrust.dashboard.plots import bar_priority_fallback, choropleth_priority, shap_waterfall
+from retrofittrust.dashboard.state import db_mtime_token, fetch_all_lsoa_state, init_twin_db
 from retrofittrust.ledger.synthetic import SYNTHETIC_LABEL
 
 DEFAULT_API = "http://127.0.0.1:8000"
@@ -75,6 +77,70 @@ def live_frame(base: pd.DataFrame, _mtime: float) -> pd.DataFrame:
     """Re-read SQLite on every interaction; ``_mtime`` busts cache after write-back."""
     _ = _mtime
     return merge_twin_state(base)
+
+
+def local_explain(lsoa_code: str, base: pd.DataFrame) -> dict | None:
+    """Fallback when FastAPI is unreachable — uses in-process composite/SHAP helper."""
+    try:
+        from retrofittrust.api.features import load_model_bundle, shap_for_row
+
+        row = base[base["lsoa21cd"].astype(str) == str(lsoa_code)]
+        if row.empty:
+            return None
+        bundle = load_model_bundle()
+        result = shap_for_row(row.head(1), bundle, top_n=10)
+        result["lsoa21cd"] = lsoa_code
+        result["source"] = "local_fallback"
+        return result
+    except Exception as exc:  # noqa: BLE001 — PoC graceful degradation
+        return {"error": str(exc), "lsoa21cd": lsoa_code}
+
+
+def render_lsoa_detail(row: pd.Series, twin_state: dict[str, dict]) -> None:
+    """Per-LSOA energy profile, priority, twin/ledger status."""
+    code = str(row.get("lsoa21cd", ""))
+    detail = build_lsoa_detail(row, twin_state.get(code))
+    st.markdown(f"**{detail['lsoa21nm'] or code}** (`{code}`)")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Priority (live twin)", f"{detail['priority_display'] or detail['priority_score'] or 0:.3f}")
+    m2.metric("EPC current → potential", f"{detail['epc_current']} → {detail['epc_potential']}")
+    m3.metric("IMD decile", detail["imd_decile"] if detail["imd_decile"] is not None else "—")
+    m4.metric("Twin status", detail["verification_status"])
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Energy / deprivation profile**")
+        profile = {
+            "EPC gap (need bands)": detail["epc_gap"],
+            "Current need (1=A … 7=G)": detail["epc_current_need"],
+            "Properties in LSOA": detail["n_properties"],
+            "Anomaly flag": detail["anomaly_flag"],
+            "Verified": detail["verified"],
+            "Modelled EPC uplift (write-back)": detail["epc_uplift_bands"],
+        }
+        st.table(pd.DataFrame({"Field": profile.keys(), "Value": profile.values()}))
+    with c2:
+        st.markdown("**Grant / works / verification (ledger stub)**")
+        if detail["is_synthetic"] or "SYNTHETIC" in detail["verification_status"]:
+            st.caption(f"**{SYNTHETIC_LABEL}** — simulated grant and verification events.")
+        ledger_rows = {
+            "Latest ledger event": detail["ledger_event"] or "—",
+            "SQLite updated": detail["ledger_updated"] or "—",
+            "Outcome EPC before": detail["outcome_epc_before"] or "—",
+            "Outcome EPC after": detail["outcome_epc_after"] or "—",
+            "Outcome recorded": detail["outcome_recorded_at"] or "—",
+        }
+        st.table(pd.DataFrame({"Field": ledger_rows.keys(), "Value": ledger_rows.values()}))
+
+    gap = detail["epc_gap"]
+    imd = detail["imd_decile"]
+    st.caption(
+        "Contributing factors (composite weights): "
+        f"EPC gap={gap if gap is not None else '—'}, "
+        f"IMD decile={imd if imd is not None else '—'}. "
+        "Use **Explain selection** below for SHAP/local attribution."
+    )
 
 
 def filter_cohort(df: pd.DataFrame) -> pd.DataFrame:
@@ -145,6 +211,13 @@ def main() -> None:
     base, data_source = cached_dataset()
     mtime = db_mtime_token()
     display = live_frame(base, mtime)
+    twin_state = fetch_all_lsoa_state()
+
+    verified_n = int(display["verified"].sum()) if "verified" in display.columns else 0
+    wb1, wb2, wb3 = st.columns(3)
+    wb1.metric("LSOAs in twin", len(display))
+    wb2.metric("Verified (write-back)", verified_n)
+    wb3.metric("SQLite token (mtime)", f"{mtime:.0f}")
 
     if data_source == "synthetic_fallback":
         st.warning(
@@ -172,10 +245,12 @@ def main() -> None:
     cohort_df = display[display["lsoa21cd"].isin(cohort)].copy() if cohort else filtered.head(0)
 
     geojson, featureidkey, geo_source = cached_geometries(tuple(display["lsoa21cd"].astype(str)))
-    if geo_source == "synthetic_grid":
+    has_real_geo = geo_source not in ("synthetic_grid",)
+    if not has_real_geo:
         st.info(
             f"**{SYNTHETIC_LABEL}** map geometries — ONS 2021 LSOA BGC GeoJSON was not found "
-            "under `data/external/`. Choropleth uses a Birmingham-centred demo grid."
+            "at `data/external/lsoa_birmingham.geojson`. "
+            "Choropleth uses a Birmingham-centred demo grid; bar chart fallback shown below."
         )
 
     map_col, table_col = st.columns((1.35, 1), gap="large")
@@ -206,6 +281,13 @@ def main() -> None:
                 selected=cohort,
             )
         st.plotly_chart(fig, use_container_width=True)
+        if not has_real_geo:
+            bar_df = filtered.copy() if not filtered.empty else display.copy()
+            bar_col = "verified_num" if colour_mode == "verified" and "verified_num" in bar_df.columns else "priority_display"
+            st.plotly_chart(
+                bar_priority_fallback(bar_df, color_col=bar_col, selected=cohort),
+                use_container_width=True,
+            )
         st.caption(f"Data: `{data_source}` · Geometries: `{geo_source}` · SQLite mtime: `{mtime}`")
 
     with table_col:
@@ -231,6 +313,19 @@ def main() -> None:
         ):
             st.markdown(f"**{SYNTHETIC_LABEL}** badge — grant/verification rows are simulated.")
 
+    st.subheader("LSOA detail")
+    detail_pick = st.selectbox(
+        "Inspect LSOA",
+        options=cohort or all_codes[: max(DEMO_COHORT_LSOA_COUNT, 1)],
+        key="detail_lsoa",
+    )
+    if detail_pick:
+        detail_row = display[display["lsoa21cd"].astype(str) == str(detail_pick)]
+        if not detail_row.empty:
+            render_lsoa_detail(detail_row.iloc[0], twin_state)
+        else:
+            st.warning("Selected LSOA not in the current frame.")
+
     st.divider()
     rank_col, whatif_col = st.columns(2)
 
@@ -252,22 +347,41 @@ def main() -> None:
             st.info("Select a cohort (or load the 10-LSOA demo) first.")
 
     with whatif_col:
-        st.subheader("What-if EPC uplift")
+        st.subheader("What-if scenario")
         st.caption(
-            "Modelled before/after only — does not write the ledger. "
+            "Lightweight client-side projection — does not write the ledger. "
             "Fuel-poverty indicator is an assumed IMD+EPC proxy, not the official BEIS statistic."
         )
-        bands = st.slider("Assumed EPC band uplift", 1, 3, 2)
+        bands = st.slider("Assumed EPC band uplift per funded LSOA", 1, 3, 2)
+        retrofit_rate = st.slider("Retrofit rate (% of cohort funded)", 0, 100, 50)
+        budget_cap = st.number_input("Budget cap (£, SYNTHETIC DATA)", min_value=0, value=100_000, step=5_000)
+        cost_per = st.number_input("Assumed cost per LSOA (£, SYNTHETIC DATA)", min_value=1_000, value=8_500, step=500)
         if not cohort_df.empty:
             scenario = apply_epc_uplift(cohort_df, bands)
             before_need = pd.to_numeric(scenario["epc_current_need"], errors="coerce").mean()
             after_need = pd.to_numeric(scenario["epc_need_after"], errors="coerce").mean()
             fp_before = int(scenario["fp_proxy_before"].sum())
             fp_after = int(scenario["fp_proxy_after"].sum())
-            m1, m2, m3 = st.columns(3)
+            projection = whatif_budget_projection(
+                cohort_df,
+                retrofit_rate_pct=float(retrofit_rate),
+                budget_cap_gbp=float(budget_cap),
+                cost_per_lsoa_gbp=float(cost_per),
+                epc_uplift_bands=bands,
+            )
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("Mean EPC need (1=A … 7=G)", f"{before_need:.2f}", f"{after_need - before_need:.2f}")
-            m2.metric("After modelled uplift", f"{after_need:.2f}")
-            m3.metric("Fuel-poverty proxy count", f"{fp_before}", f"{fp_after - fp_before}")
+            m2.metric("Fuel-poverty proxy (full cohort)", f"{fp_before}", f"{fp_after - fp_before}")
+            m3.metric("LSOAs funded (rate ∩ budget)", projection["funded_count"])
+            m4.metric("Budget spent (£)", f"{projection['budget_spent_gbp']:,.0f}")
+            st.caption(
+                f"**{SYNTHETIC_LABEL}** costs · prioritised by live priority score · "
+                f"remaining budget £{projection['budget_remaining_gbp']:,.0f} · "
+                f"funded fuel-poverty proxy {projection['fp_proxy_before']} → {projection['fp_proxy_after']}"
+            )
+            if projection["funded_codes"]:
+                st.caption(f"Funded LSOAs: {', '.join(projection['funded_codes'][:12])}"
+                           + (" …" if len(projection["funded_codes"]) > 12 else ""))
         else:
             st.info("Select LSOAs to compare before/after aggregates.")
 
@@ -276,21 +390,34 @@ def main() -> None:
 
     with shap_col:
         st.subheader("SHAP / local explanation")
-        pick = st.selectbox(
+        explain_pick = st.selectbox(
             "LSOA or property-level aggregate to explain",
             options=cohort or display["lsoa21cd"].astype(str).tolist()[:DEMO_COHORT_LSOA_COUNT],
+            key="explain_lsoa",
         )
-        if st.button("Explain selection", disabled=not (api_ok and pick)):
-            try:
-                explained = api_post("/explain", {"lsoa21cd": pick, "top_n": 10})
-                st.session_state["last_explain"] = explained
-            except requests.RequestException as exc:
-                st.error(f"/explain failed: {exc}")
-                explained = None
-        else:
-            explained = st.session_state.get("last_explain")
+        explain_clicked = st.button("Explain selection", disabled=not explain_pick)
+        explained = st.session_state.get("last_explain")
+        if explain_clicked and explain_pick:
+            if api_ok:
+                try:
+                    explained = api_post("/explain", {"lsoa21cd": explain_pick, "top_n": 10})
+                    st.session_state["last_explain"] = explained
+                except requests.RequestException as exc:
+                    st.warning(f"/explain unavailable ({exc}); using local fallback.")
+                    explained = local_explain(explain_pick, base)
+                    if explained:
+                        st.session_state["last_explain"] = explained
+            else:
+                explained = local_explain(explain_pick, base)
+                if explained:
+                    st.session_state["last_explain"] = explained
+                    st.info("API offline — showing local composite/SHAP fallback.")
 
-        if explained:
+        if explained and explained.get("error"):
+            st.error(explained["error"])
+        elif explained:
+            if explained.get("source") == "local_fallback":
+                st.caption("Source: local in-process helper (FastAPI not used).")
             st.caption(explained.get("caveat", ""))
             st.caption(
                 f"method={explained.get('method')} · "
