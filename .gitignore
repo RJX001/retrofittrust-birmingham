@@ -13,14 +13,16 @@ data/raw/**
 !data/raw/README.md
 
 # Generated artifacts (optional local cache)
+# Keep huge parquets / raw extracts out of git; dissertation figures ARE tracked.
 data/interim/*
 data/processed/*
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 
 models/*.joblib
-reports/figures/*.png
-reports/figures/*.html
+
+# Dissertation evidence in reports/figures/ (PNG, HTML, *numbers.md) is tracked.
+reports/figures/__pycache__/
 
 *.db
 .env

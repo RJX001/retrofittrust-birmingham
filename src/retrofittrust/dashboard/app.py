@@ -35,7 +35,7 @@ from retrofittrust.dashboard.plots import bar_priority_fallback, choropleth_prio
 from retrofittrust.dashboard.state import db_mtime_token, fetch_all_lsoa_state, init_twin_db
 from retrofittrust.ledger.synthetic import SYNTHETIC_LABEL
 
-DEFAULT_API = "http://127.0.0.1:8000"
+DEFAULT_API = "http://127.0.0.1:8001"
 
 st.set_page_config(
     page_title="RetrofitTrust Birmingham",

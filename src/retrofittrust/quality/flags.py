@@ -185,7 +185,7 @@ def attach_quality_flags(
         for i in range(n)
     ]
 
-    # Always copy detector outputs through so the dashboard can show both sets.
+    extra: dict[str, Any] = {}
     passthrough = [
         "ae_score",
         "iforest_score",
@@ -202,17 +202,23 @@ def attach_quality_flags(
     ]
     for col in passthrough:
         if col in aligned.columns:
-            out[col] = aligned[col].to_numpy()
+            extra[col] = aligned[col].to_numpy()
     for col in aligned.columns:
         if col.startswith("recon_err__"):
-            out[col] = aligned[col].to_numpy()
+            extra[col] = aligned[col].to_numpy()
 
-    out[CONFIDENCE_FLAG_COL] = flagged.astype(int)
-    out[CONFIDENCE_SCORE_COL] = confidence
-    out[CONFIDENCE_LABEL_COL] = np.where(flagged, QUARANTINE_LABEL, OK_LABEL)
-    out["sample_weight"] = weights
-    out["inference_caveat"] = caveats
-    out["data_quality_flag_mode"] = flag_mode
+    extra[CONFIDENCE_FLAG_COL] = flagged.astype(int)
+    extra[CONFIDENCE_SCORE_COL] = confidence
+    extra[CONFIDENCE_LABEL_COL] = np.where(flagged, QUARANTINE_LABEL, OK_LABEL)
+    extra["sample_weight"] = weights
+    extra["inference_caveat"] = caveats
+    extra["data_quality_flag_mode"] = flag_mode
+    orig_index = out.index
+    overlap = [c for c in extra if c in out.columns]
+    if overlap:
+        out = out.drop(columns=overlap)
+    out = pd.concat([out.reset_index(drop=True), pd.DataFrame(extra)], axis=1)
+    out.index = orig_index
 
     if len(out) != n:
         raise RuntimeError("attach_quality_flags changed row count — deletion is forbidden.")

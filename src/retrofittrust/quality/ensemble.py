@@ -16,6 +16,7 @@ against the EPC quality-flag literature band of roughly 27–60%.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Optional, Sequence, Union
 
 import numpy as np
@@ -44,24 +45,32 @@ def _pyod_standardizer(X: np.ndarray, X_t: Optional[np.ndarray] = None, keep_sca
     return standardizer(X, X_t, keep_scalar=keep_scalar)
 
 
+@lru_cache(maxsize=1)
+def _combo_available() -> bool:
+    try:
+        import combo  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _combine_average(score_matrix: np.ndarray) -> np.ndarray:
     """PyOD average combination; numpy mean if ``combo`` is not installed."""
-    try:
+    if _combo_available():
         from pyod.models.combination import average as pyod_average
 
         return np.asarray(pyod_average(score_matrix), dtype=float)
-    except Exception:
-        return np.mean(score_matrix, axis=1)
+    return np.mean(score_matrix, axis=1)
 
 
 def _combine_maximization(score_matrix: np.ndarray) -> np.ndarray:
     """PyOD maximization combination; numpy max if ``combo`` is not installed."""
-    try:
+    if _combo_available():
         from pyod.models.combination import maximization as pyod_maximization
 
         return np.asarray(pyod_maximization(score_matrix), dtype=float)
-    except Exception:
-        return np.max(score_matrix, axis=1)
+    return np.max(score_matrix, axis=1)
 
 
 def _to_numpy(X: ArrayLike) -> tuple[np.ndarray, Optional[Sequence[str]], Optional[Any]]:

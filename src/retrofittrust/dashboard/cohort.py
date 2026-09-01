@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from retrofittrust.api.features import load_lsoa_frame, normalise_columns
 from retrofittrust.config import DEMO_COHORT_LSOA_COUNT, SEED
+from retrofittrust.dashboard.data_loader import load_lsoa_dataset
 
 
 def _find_lsoa_column(df: pd.DataFrame) -> str:
@@ -16,13 +16,8 @@ def _find_lsoa_column(df: pd.DataFrame) -> str:
 
 
 def _load_merged_lsoa() -> pd.DataFrame:
-    try:
-        frame, _source = load_lsoa_frame(allow_synthetic_fallback=True)
-        return normalise_columns(frame)
-    except (ValueError, KeyError, TypeError):
-        from retrofittrust.api.features import _synthetic_lsoa_frame
-
-        return _synthetic_lsoa_frame()
+    frame, _source = load_lsoa_dataset()
+    return frame
 
 
 def select_demo_cohort(n: int | None = None) -> list[str]:

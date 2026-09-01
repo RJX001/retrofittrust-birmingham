@@ -28,6 +28,7 @@ from .train import (
     load_training_frame,
     run_ranking_training,
     train_ranking_model,
+    write_ranking_number_reports,
 )
 
 SEED = 42
@@ -54,4 +55,5 @@ __all__ = [
     "shap_values_frame",
     "local_contributions",
     "explain_lsoa",
+    "write_ranking_number_reports",
 ]

@@ -15,8 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from retrofittrust.api.features import (
     SHAP_CAVEAT,
+    explain_from_saved_scores,
     load_lsoa_frame,
     load_model_bundle,
+    load_retrofit_scores,
     predict_priority,
     shap_for_row,
 )
@@ -107,35 +109,87 @@ def health() -> dict[str, Any]:
     }
 
 
-def _rank_via_program1(codes: list[str]) -> list[RankItem] | None:
-    """Prefer the trained LightGBM artefact when Program 1 has produced it."""
-    try:
-        from retrofittrust.modeling.predict import rank_lsoas
-    except ImportError:
-        return None
-    try:
-        result = rank_lsoas(lsoa_codes=codes)
-    except (FileNotFoundError, ValueError, KeyError):
-        return None
-    twin = fetch_all_lsoa_state()
+def _rank_items_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    twin: dict[str, dict[str, Any]],
+) -> list[RankItem]:
     items: list[RankItem] = []
-    for rank_i, row in enumerate(result.get("rankings") or [], start=1):
-        code = str(row.get("lsoa21cd") or row.get("lsoa_code") or row.get("lsoa"))
+    for rank_i, row in enumerate(rows, start=1):
+        code = str(row.get("lsoa21cd") or row.get("lsoa_code") or row.get("lsoa") or "")
+        if not code:
+            continue
         state = twin.get(code, {})
         live = state.get("priority_score")
-        score = float(live) if live is not None else float(row.get("score") or 0.0)
+        score = float(live) if live is not None else float(row.get("score") or row.get("priority_score") or 0.0)
         low = bool(row.get("low_confidence"))
+        if not low and row.get("data_quality_flag") == "low_confidence":
+            low = True
         items.append(
             RankItem(
                 lsoa21cd=code,
-                lsoa21nm=None,
+                lsoa21nm=None if not row.get("lsoa21nm") else str(row.get("lsoa21nm")),
                 priority_score=score,
                 rank=rank_i,
                 data_quality_flag="low_confidence" if low else None,
                 verified=bool(state.get("verified")),
             )
         )
-    return items or None
+    return items
+
+
+def _rank_via_lgbm(codes: list[str]) -> list[RankItem] | None:
+    """Live LightGBM scoring of the requested LSOA codes."""
+    try:
+        from retrofittrust.modeling.predict import rank_lsoas
+    except ImportError:
+        return None
+    try:
+        result = rank_lsoas(lsoa_codes=codes)
+    except Exception:  # noqa: BLE001 — missing/corrupt artefact or feature mismatch
+        return None
+    rankings = result.get("rankings") or []
+    if not rankings:
+        return None
+    return _rank_items_from_rows(rankings, twin=fetch_all_lsoa_state()) or None
+
+
+def _rank_via_saved_scores(codes: list[str]) -> list[RankItem] | None:
+    """Rank from ``data/processed/retrofit_scores`` when the joblib path is unavailable."""
+    try:
+        pack = load_retrofit_scores()
+    except Exception:  # noqa: BLE001 — scores file optional
+        return None
+    if pack is None:
+        return None
+    frame, _source = pack
+    wanted = {str(c) for c in codes}
+    subset = frame[frame["lsoa21cd"].astype(str).isin(wanted)].copy()
+    if subset.empty:
+        return None
+    subset = subset.sort_values("priority_score", ascending=False)
+    rows: list[dict[str, Any]] = []
+    for rec in subset.to_dict(orient="records"):
+        notes = str(rec.get("confidence_notes") or "")
+        flag = rec.get("anomaly_flag")
+        try:
+            flagged = flag is not None and float(flag) > 0
+        except (TypeError, ValueError):
+            flagged = str(flag).lower() in {"true", "1", "flagged"}
+        rows.append(
+            {
+                "lsoa21cd": str(rec["lsoa21cd"]),
+                "lsoa21nm": rec.get("lsoa21nm"),
+                "score": float(rec["priority_score"]),
+                "low_confidence": "low-confidence" in notes.lower() or flagged,
+            }
+        )
+    return _rank_items_from_rows(rows, twin=fetch_all_lsoa_state()) or None
+
+
+def _rank_via_program1(codes: list[str]) -> list[RankItem] | None:
+    """Prefer live LightGBM, then saved retrofit_scores, else None (composite fallback)."""
+    return _rank_via_lgbm(codes) or _rank_via_saved_scores(codes)
 
 
 @app.post("/rank", response_model=RankResponse)
@@ -225,24 +279,37 @@ def explain(payload: ExplainRequest) -> ExplainResponse:
 
         p1 = explain_lsoa(lsoa_code=payload.lsoa21cd, top_k=payload.top_n)
         contrib = p1.get("top_contributions") or []
+        if contrib:
+            return ExplainResponse(
+                lsoa21cd=str(payload.lsoa21cd),
+                base_value=float(p1.get("base_value") or 0.0),
+                prediction=float(p1.get("prediction") or 0.0),
+                features=[
+                    ShapFeature(
+                        feature=str(c.get("feature")),
+                        value=c.get("value"),
+                        shap_value=float(c.get("shap_value") or 0.0),
+                    )
+                    for c in contrib
+                ],
+                method=str(p1.get("method") or "shap_tree_explainer"),
+                caveat=str(p1.get("caveat") or SHAP_CAVEAT),
+                model_loaded=True,
+            )
+    except Exception:  # noqa: BLE001 — missing model, LSOA, or SHAP failure
+        pass
+
+    saved = explain_from_saved_scores(payload.lsoa21cd, top_n=payload.top_n)
+    if saved is not None:
         return ExplainResponse(
             lsoa21cd=str(payload.lsoa21cd),
-            base_value=float(p1.get("base_value") or 0.0),
-            prediction=float(p1.get("prediction") or 0.0),
-            features=[
-                ShapFeature(
-                    feature=str(c.get("feature")),
-                    value=c.get("value"),
-                    shap_value=float(c.get("shap_value") or 0.0),
-                )
-                for c in contrib
-            ],
-            method=str(p1.get("method") or "shap_tree_explainer"),
-            caveat=str(p1.get("caveat") or SHAP_CAVEAT),
-            model_loaded=True,
+            base_value=float(saved["base_value"]),
+            prediction=float(saved["prediction"]),
+            features=[ShapFeature(**f) for f in saved["features"]],
+            method=str(saved["method"]),
+            caveat=str(saved.get("caveat") or SHAP_CAVEAT),
+            model_loaded=bool(saved.get("model_loaded")),
         )
-    except (FileNotFoundError, ValueError, ImportError, KeyError):
-        pass
 
     subset, _full = _frame_by_codes([payload.lsoa21cd])
     row = subset.iloc[[0]]

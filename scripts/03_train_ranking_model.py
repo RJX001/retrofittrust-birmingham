@@ -93,6 +93,9 @@ def _print_checkpoint(metrics: dict) -> None:
         ("SHAP beeswarm:", "shap_beeswarm"),
         ("SHAP bar:", "shap_bar"),
         ("SHAP waterfall:", "shap_waterfall_saved"),
+        ("CV metrics figure:", "cv_metrics_figure"),
+        ("Weight sensitivity fig:", "weight_sensitivity_figure"),
+        ("Ranking numbers md:", "ranking_numbers_md"),
     ):
         value = metrics.get(key)
         if value:

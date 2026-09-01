@@ -31,6 +31,7 @@ from retrofittrust.config import (  # noqa: E402
     DATA_PROCESSED,
     DEMO_COHORT_LSOA_COUNT,
     LEDGER_PATH,
+    REPORTS_FIGURES,
     SQLITE_PATH,
 )
 
@@ -402,6 +403,121 @@ def _extract_top_lsoa(rank_result: dict, fallback: list[str]) -> tuple[str, floa
     return fallback[0], 0.0
 
 
+def _verified_count() -> int:
+    from retrofittrust.ledger.twin_state import fetch_all_lsoa_state
+
+    state = fetch_all_lsoa_state()
+    return sum(1 for entry in state.values() if entry.get("verified"))
+
+
+def _write_checkpoint6_evidence(
+    *,
+    cohort: list[str],
+    ranked_n: int,
+    top_lsoa: str,
+    top_score: float,
+    ledger_height: int,
+    ledger_ok: bool,
+    verified_n: int,
+    writeback_ok: bool,
+    transport: str,
+) -> Path:
+    """Dissertation evidence for the five-step twin → AI → ledger → write-back loop."""
+    REPORTS_FIGURES.mkdir(parents=True, exist_ok=True)
+    md_path = REPORTS_FIGURES / "06_integration_numbers.md"
+    png_path = REPORTS_FIGURES / "06_integration_loop.png"
+
+    steps = [
+        ("1 Twin cohort", f"{len(cohort)} LSOAs"),
+        ("2 AI rank", f"{ranked_n} ranked"),
+        ("3 Ledger append", f"height {ledger_height}"),
+        ("4 Verify chain", "PASS" if ledger_ok else "FAIL"),
+        ("5 SQLite write-back", f"{verified_n} verified"),
+    ]
+    lines = [
+        "# Checkpoint 6 — integration loop (twin → AI → ledger → SQLite)",
+        "",
+        "Five-step loop from CURSOR_BUILD_SPEC §6. Grant/works/verification payloads",
+        f"are **{SYNTHETIC_LABEL}**. Ledger is a hashlib SHA-256 hash-chain, not a live blockchain.",
+        "",
+        f"- Transport: `{transport}`",
+        f"- Cohort size: **{len(cohort)}** LSOAs",
+        f"- Ranked LSOAs: **{ranked_n}**",
+        f"- Top LSOA: `{top_lsoa}` (priority score {top_score:.4f})",
+        f"- Ledger height: **{ledger_height}** blocks",
+        f"- Chain `verify_chain()`: **{'PASS' if ledger_ok else 'FAIL'}**",
+        f"- Verified LSOAs in SQLite: **{verified_n}**",
+        f"- Write-back checkpoint: **{'PASS' if writeback_ok else 'FAIL'}**",
+        f"- Seed: `{SEED}`",
+        "",
+        "## Five steps",
+        "",
+        "| Step | Result |",
+        "| --- | --- |",
+    ]
+    for label, result in steps:
+        lines.append(f"| {label} | {result} |")
+    lines.extend(
+        [
+            "",
+            "## Caveats",
+            "",
+            "- Ecological fallacy: LSOA IMD is not household deprivation.",
+            "- SHAP TreeExplainer can misattribute among correlated EPC/IMD features.",
+            "- EPC modelled-vs-metered gap (~16% gas / ~31% electric).",
+            f"- `{png_path.name}` is a summary badge, not a production monitoring dashboard.",
+            "",
+        ]
+    )
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    log.info("Wrote %s", md_path)
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(9.2, 4.6))
+        labels = [s[0] for s in steps]
+        ok_flags = [True, ranked_n > 0, ledger_height >= 4, ledger_ok, writeback_ok]
+        colours = ["#009E73" if flag else "#D55E00" for flag in ok_flags]
+        bars = ax.barh(labels[::-1], [1] * 5, color=colours[::-1], height=0.55)
+        ax.set_xlim(0, 1.35)
+        ax.set_xticks([])
+        ax.set_title("Checkpoint 6 — five-step integration loop")
+        captions = [s[1] for s in steps]
+        for bar, caption, flag in zip(bars, captions[::-1], ok_flags[::-1]):
+            ax.text(
+                0.04,
+                bar.get_y() + bar.get_height() / 2,
+                f"{'PASS' if flag else 'FAIL'}  ·  {caption}",
+                va="center",
+                color="white",
+                fontsize=9,
+                fontweight="bold",
+            )
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["bottom"].set_visible(False)
+        fig.text(
+            0.01,
+            -0.02,
+            f"Cohort {len(cohort)} · ranked {ranked_n} · ledger height {ledger_height} · "
+            f"verified {verified_n} · {SYNTHETIC_LABEL} · seed={SEED}",
+            fontsize=8,
+            color="#4D4D4D",
+        )
+        fig.tight_layout()
+        fig.savefig(png_path, dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        log.info("Wrote %s", png_path)
+    except Exception as exc:  # noqa: BLE001 — numbers.md is the required artefact
+        log.warning("Could not write 06_integration_loop.png (%s)", exc)
+
+    return md_path
+
+
 def main() -> int:
     import argparse
 
@@ -423,6 +539,8 @@ def main() -> int:
     # Step 2
     ai = step2_rank_and_explain(lsoas, use_api=use_api, base_url=args.api_base)
     top_lsoa, top_score = _extract_top_lsoa(ai["rank"], lsoas)
+    rank_payload = ai["rank"] or {}
+    ranked_n = len(rank_payload.get("items") or rank_payload.get("rankings") or lsoas)
     log.info("Prioritised LSOA: %s (score=%.4f)", top_lsoa, top_score)
 
     # Step 3 — eligibility prioritisation
@@ -438,22 +556,41 @@ def main() -> int:
     verification_data = _ledger_block_data(verification_block)
 
     # Step 4 applies verification + SQLite write-back (direct and API paths)
-    step5_writeback_and_verify(
+    writeback_ok = step5_writeback_and_verify(
         top_lsoa, verification_data, already_applied=True
     )
 
     # Final ledger verify
+    ledger_height = 0
+    ledger_ok = False
     if use_api:
         verify = _http_get(args.api_base, "/ledger/verify")
         log.info("Final ledger verify (API): %s", verify)
+        ledger_ok = bool(verify.get("valid"))
+        ledger_height = int(verify.get("length") or 0)
     else:
         ledger = _get_ledger()
         ok, detail = ledger.verify_chain()
         log.info("Final ledger verify (direct): ok=%s detail=%s", ok, detail)
+        ledger_ok = bool(ok)
+        ledger_height = len(ledger.chain)
+
+    verified_n = _verified_count()
+    _write_checkpoint6_evidence(
+        cohort=lsoas,
+        ranked_n=ranked_n,
+        top_lsoa=str(top_lsoa),
+        top_score=float(top_score),
+        ledger_height=ledger_height,
+        ledger_ok=ledger_ok,
+        verified_n=verified_n,
+        writeback_ok=writeback_ok,
+        transport=f"HTTP ({args.api_base})" if use_api else "direct Python imports",
+    )
 
     _banner(f"Integration loop complete [{SYNTHETIC_LABEL}]")
     log.info("Next: streamlit run src/retrofittrust/dashboard/app.py — choropleth should show write-back")
-    return 0
+    return 0 if writeback_ok and ledger_ok else 1
 
 
 if __name__ == "__main__":

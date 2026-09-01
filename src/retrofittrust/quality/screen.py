@@ -149,9 +149,10 @@ def _stratified_lsoa_sample(df: pd.DataFrame, n: int, seed: int = SEED) -> pd.Da
 
     n_groups = int(df[lsoa_col].nunique(dropna=True))
     per = max(1, n // max(n_groups, 1))
-    sampled = df.groupby(lsoa_col, group_keys=False, dropna=False).apply(
-        lambda g: g.sample(n=min(len(g), per), random_state=seed)
-    )
+    pieces: list[pd.DataFrame] = []
+    for _, group in df.groupby(lsoa_col, dropna=False, sort=False):
+        pieces.append(group.sample(n=min(len(group), per), random_state=seed))
+    sampled = pd.concat(pieces, ignore_index=False)
     leftover = df.drop(index=sampled.index, errors="ignore")
     if len(sampled) < n and len(leftover) > 0:
         extra = leftover.sample(n=min(n - len(sampled), len(leftover)), random_state=seed)
@@ -259,6 +260,229 @@ def _save_quality_figure(metrics: dict[str, Any], *, path: Path) -> None:
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     logger.info("Quality figure saved to %s", path)
+    _save_number_figures(metrics, figures_dir=path.parent)
+    write_quality_numbers_markdown(metrics, path=path.parent / "02_quality_numbers.md")
+
+
+def _save_number_figures(metrics: dict[str, Any], *, figures_dir: Path) -> None:
+    """Large-number plates for checkpoint 2 (flag rates and injection recall)."""
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import FancyBboxPatch
+    except ImportError:
+        return
+
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    consensus = float(metrics.get("flagged_rate_consensus", metrics.get("flagged_rate", 0.0)) or 0.0)
+    union = float(metrics.get("flagged_rate_union", consensus) or 0.0)
+    lo, hi = LITERATURE_FLAG_RATE_RANGE
+    n_rows = int(metrics.get("output_rows") or metrics.get("input_rows") or 0)
+
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 6.2)
+    ax.axis("off")
+    ax.set_title("Quality-screen flag rates (AE + Isolation Forest)", fontsize=13, pad=8)
+    cards = [
+        (1.1, "#4472C4", f"{consensus * 100:.1f}%", "Consensus", "high precision"),
+        (5.6, "#ED7D31", f"{union * 100:.1f}%", "Union (operational)", "high recall"),
+    ]
+    for x0, colour, value, title, subtitle in cards:
+        ax.add_patch(
+            FancyBboxPatch(
+                (x0, 2.35),
+                3.3,
+                3.2,
+                boxstyle="round,pad=0.08,rounding_size=0.18",
+                facecolor=colour,
+                edgecolor="none",
+                alpha=0.92,
+            )
+        )
+        ax.text(x0 + 1.65, 4.55, value, ha="center", va="center", fontsize=32, color="white", fontweight="bold")
+        ax.text(x0 + 1.65, 3.35, title, ha="center", va="center", fontsize=12, color="white")
+        ax.text(x0 + 1.65, 2.85, subtitle, ha="center", va="center", fontsize=9, color="white", alpha=0.9)
+
+    ax.add_patch(
+        FancyBboxPatch(
+            (1.1, 0.35),
+            7.8,
+            1.6,
+            boxstyle="round,pad=0.06,rounding_size=0.12",
+            facecolor="#e8f5e9",
+            edgecolor="#2e7d32",
+            linewidth=1.2,
+        )
+    )
+    ax.text(
+        5.0,
+        1.45,
+        "EPC literature band  27–60%",
+        ha="center",
+        va="center",
+        fontsize=12,
+        color="#1b5e20",
+        fontweight="bold",
+    )
+    in_band = lo <= consensus <= hi and lo <= union <= hi
+    status = "both rates sit inside the band" if in_band else "investigate thresholds — rate outside the band"
+    n_bit = f"  ·  n = {n_rows:,} rows" if n_rows else ""
+    ax.text(
+        5.0,
+        0.85,
+        f"{status}{n_bit}  ·  flagged, never deleted",
+        ha="center",
+        va="center",
+        fontsize=9,
+        color="#33691e",
+    )
+    fig.tight_layout()
+    flag_path = figures_dir / "02_flag_rates.png"
+    fig.savefig(flag_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+    recall = float(metrics.get("synthetic_injection_recall", 0.0) or 0.0)
+    chance = float(metrics.get("synthetic_chance_baseline", union) or 0.0)
+    lift_pp = (recall - chance) * 100
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 6.2)
+    ax.axis("off")
+    ax.set_title("SYNTHETIC injection recall versus chance", fontsize=13, pad=8)
+    ax.add_patch(
+        FancyBboxPatch(
+            (0.7, 2.2),
+            4.2,
+            3.4,
+            boxstyle="round,pad=0.08,rounding_size=0.18",
+            facecolor="#548235",
+            edgecolor="none",
+        )
+    )
+    ax.text(2.8, 4.55, f"{recall * 100:.1f}%", ha="center", va="center", fontsize=34, color="white", fontweight="bold")
+    ax.text(2.8, 3.35, "Injection recall", ha="center", va="center", fontsize=12, color="white")
+    ax.text(2.8, 2.8, "SYNTHETIC DATA", ha="center", va="center", fontsize=9, color="white", alpha=0.9)
+    ax.add_patch(
+        FancyBboxPatch(
+            (5.3, 2.2),
+            4.0,
+            3.4,
+            boxstyle="round,pad=0.08,rounding_size=0.18",
+            facecolor="#7f7f7f",
+            edgecolor="none",
+        )
+    )
+    ax.text(7.3, 4.55, f"{chance * 100:.1f}%", ha="center", va="center", fontsize=34, color="white", fontweight="bold")
+    ax.text(7.3, 3.35, "Chance baseline", ha="center", va="center", fontsize=12, color="white")
+    ax.text(7.3, 2.8, "operational flag rate", ha="center", va="center", fontsize=9, color="white", alpha=0.9)
+    beats = metrics.get("synthetic_beats_chance")
+    if beats is None:
+        beats = recall > chance + 0.05
+    banner = (
+        f"Lift {lift_pp:+.1f} percentage points  ·  "
+        f"{'beats chance (+5 pp rule)' if beats else 'does not clearly beat chance'}"
+    )
+    ax.add_patch(
+        FancyBboxPatch(
+            (0.7, 0.4),
+            8.6,
+            1.4,
+            boxstyle="round,pad=0.06,rounding_size=0.12",
+            facecolor="#fff8e1",
+            edgecolor="#f9a825",
+            linewidth=1.2,
+        )
+    )
+    ax.text(5.0, 1.1, banner, ha="center", va="center", fontsize=11, color="#5d4e00")
+    fig.tight_layout()
+    recall_path = figures_dir / "02_injection_recall.png"
+    fig.savefig(recall_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Number figures saved to %s and %s", flag_path, recall_path)
+
+
+def write_quality_numbers_markdown(metrics: dict[str, Any], *, path: Path) -> None:
+    """Persist checkpoint-2 rates for the dissertation evidence pack."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    consensus = float(metrics.get("flagged_rate_consensus", metrics.get("flagged_rate", 0.0)) or 0.0)
+    union = float(metrics.get("flagged_rate_union", consensus) or 0.0)
+    recall = float(metrics.get("synthetic_injection_recall", 0.0) or 0.0)
+    chance = float(metrics.get("synthetic_chance_baseline", union) or 0.0)
+    n_out = metrics.get("output_rows")
+    n_in = metrics.get("input_rows")
+    n_feat = metrics.get("n_features")
+    lo, hi = LITERATURE_FLAG_RATE_RANGE
+    tune = metrics.get("threshold_tune") or {}
+    by_kind = metrics.get("synthetic_recall_by_kind") or {}
+    kind_lines = ""
+    if by_kind:
+        kind_lines = "\n".join(
+            f"- `{kind}`: {float(val) * 100:.1f}%" for kind, val in sorted(by_kind.items())
+        )
+    beats = metrics.get("synthetic_beats_chance")
+    if beats is None:
+        beats = recall > chance + 0.05
+    in_band_c = lo <= consensus <= hi
+    in_band_u = lo <= union <= hi
+    n_in_s = f"{n_in:,}" if isinstance(n_in, int) else str(n_in)
+    n_out_s = f"{n_out:,}" if isinstance(n_out, int) else str(n_out)
+    n_cons = int(round(consensus * n_out)) if isinstance(n_out, int) else None
+    n_union = int(round(union * n_out)) if isinstance(n_out, int) else None
+    cons_count = f"{consensus * 100:.1f}% ({n_cons:,} rows)" if n_cons is not None else f"{consensus * 100:.1f}%"
+    union_count = f"{union * 100:.1f}% ({n_union:,} rows)" if n_union is not None else f"{union * 100:.1f}%"
+    body = f"""# Checkpoint 2 — quality-screen numbers
+
+British English. Seed = 42. Flagged records are quarantined, never silently deleted.
+
+## Sample
+
+| Item | Value |
+|---|---|
+| Input source | {metrics.get("input_source", "unknown")} |
+| Input rows | {n_in_s} |
+| Output rows (flagged parquet) | {n_out_s} |
+| AE features | {n_feat} |
+| AE architecture | hidden={metrics.get("ae_hidden", 404)}, bottleneck={metrics.get("ae_bottleneck", 202)} |
+| Threshold | k={tune.get("k", "n/a")}, target={tune.get("target_flag_rate", "n/a")}, EVT={tune.get("prefer_evt", "n/a")}, method={metrics.get("ae_threshold_method", "mean_sigma")} |
+
+Row count is unchanged from input to output (quarantine / flag only). LightGBM should pass `sample_weight` (1.0 clean, 0.35 flagged).
+
+## Flag rates
+
+| Mode | Rate | Literature band (27–60%) |
+|---|---|---|
+| Consensus (`quality_flag`) | **{cons_count}** | {"inside" if in_band_c else "outside"} |
+| Union (`quality_flag_union`, operational) | **{union_count}** | {"inside" if in_band_u else "outside"} |
+
+Literature sanity: roughly 27% of EPC records show at least one quality flag; true error rate estimated 36–62% in the wider literature. The operational (union) rate is the high-recall set used for LightGBM sample weights.
+
+## SYNTHETIC injection evaluation
+
+Injected copies only — labelled **SYNTHETIC DATA**, not real assessor errors.
+
+| Metric | Rate |
+|---|---|
+| Injection recall | **{recall * 100:.1f}%** |
+| Chance baseline (operational flag rate) | {chance * 100:.1f}% |
+| Lift | {(recall - chance) * 100:+.1f} pp |
+| Beats chance (+5 pp) | {"yes" if beats else "no"} |
+"""
+    if kind_lines:
+        body += "\n### Recall by injection kind\n\n" + kind_lines + "\n"
+    body += """
+## Figures
+
+- `reports/figures/quality_screen_summary.png` — combined checkpoint summary
+- `reports/figures/02_flag_rates.png` — consensus vs union vs literature band
+- `reports/figures/02_injection_recall.png` — synthetic injection recall vs chance
+
+## Artefacts
+
+- `data/processed/quality_flagged.parquet`
+- `models/quality_screen.joblib`
+"""
+    path.write_text(body, encoding="utf-8")
+    logger.info("Quality numbers markdown saved to %s", path)
 
 
 def run_quality_screen(
@@ -322,7 +546,7 @@ def run_quality_screen(
     if len(flagged) != n_in:
         raise RuntimeError("Quality screen changed row count — deletion is forbidden.")
 
-    out = df.copy()
+    extra: dict[str, Any] = {}
     passthrough = [
         "ae_score",
         "iforest_score",
@@ -342,16 +566,17 @@ def run_quality_screen(
     ]
     for col in passthrough:
         if col in flagged.columns:
-            out[col] = flagged[col].to_numpy()
+            extra[col] = flagged[col].to_numpy()
     for col in flagged.columns:
         if col.startswith("recon_err__"):
-            out[col] = flagged[col].to_numpy()
+            extra[col] = flagged[col].to_numpy()
 
     # Aliases for modeling.features / scripts/02 / the FastAPI rank payload.
-    out[CONSENSUS_FLAG_COL] = flagged["flagged_consensus"].astype(int).to_numpy()
-    out[UNION_FLAG_COL] = flagged["flagged_union"].astype(int).to_numpy()
-    out[CONFIDENCE_COL] = flagged[CONFIDENCE_SCORE_COL].to_numpy()
-    out["low_confidence_caveat"] = flagged["inference_caveat"].to_numpy()
+    extra[CONSENSUS_FLAG_COL] = flagged["flagged_consensus"].astype(int).to_numpy()
+    extra[UNION_FLAG_COL] = flagged["flagged_union"].astype(int).to_numpy()
+    extra[CONFIDENCE_COL] = flagged[CONFIDENCE_SCORE_COL].to_numpy()
+    extra["low_confidence_caveat"] = flagged["inference_caveat"].to_numpy()
+    out = pd.concat([df.reset_index(drop=True), pd.DataFrame(extra)], axis=1)
 
     if len(out) != n_in:
         raise RuntimeError("Flag attach changed row count — deletion is forbidden.")

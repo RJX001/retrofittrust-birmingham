@@ -23,5 +23,10 @@
   "face_validity_json": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\models\\ranking_face_validity.json",
   "face_validity_notes": [
     "Of the 10 most IMD-deprived LSOAs (lowest decile), 10 sit at or above the cohort median priority score (0.449)."
-  ]
+  ],
+  "flagged_downweighted": true,
+  "flagged_sample_weight": 0.35,
+  "cv_metrics_figure": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\reports\\figures\\03_cv_metrics.png",
+  "weight_sensitivity_figure": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\reports\\figures\\03_weight_sensitivity.png",
+  "ranking_numbers_md": "C:\\Users\\rajan\\Desktop\\Master Full Resouces\\Program Full Build\\reports\\figures\\03_ranking_numbers.md"
 }

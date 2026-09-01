@@ -64,7 +64,7 @@ def demonstrate_tampering(ledger: Ledger | None = None) -> dict[str, Any]:
         "tampered_block_hash_stored": target.get("hash"),
         "tampered_block_hash_recomputed": compute_block_hash(target),
         "persisted": False,
-        "note": "Copy only — live ledger.json was not modified",
+        "note": "Copy only - live ledger.json was not modified",
     }
 
 

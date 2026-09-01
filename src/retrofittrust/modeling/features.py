@@ -99,6 +99,8 @@ _EXCLUDE_PREFIXES = (
 )
 
 # Preferred EPC numeric fields after snake_case preprocess.
+# Correlated group (SHAP TreeExplainer caveat): floor area, habitable /
+# heated rooms, and heating cost can share credit in local explanations.
 EPC_NUMERIC_FEATURES = (
     "current_energy_efficiency",
     "potential_energy_efficiency",
@@ -143,6 +145,7 @@ EPC_CATEGORICAL_PREFIXES = (
 )
 
 # IMD 2025 — area-level; ecological-fallacy caveat applies.
+# Correlated group (SHAP caveat): imd_score vs income_score / income domain.
 IMD_FEATURES = (
     "imd_score",
     "imd_rank",
@@ -613,7 +616,7 @@ def compute_sample_weights(df: pd.DataFrame) -> np.ndarray:
     1. Explicit ``sample_weight`` column from preprocess.
     2. ``quality_confidence`` in [0, 1], clipped to at least
        ``MIN_SAMPLE_WEIGHT`` so flagged rows are down-weighted, not dropped.
-    3. Boolean quality flags → ``FLAGGED_SAMPLE_WEIGHT`` (assumed 0.3).
+    3. Boolean quality flags → ``FLAGGED_SAMPLE_WEIGHT`` (0.35).
     4. Otherwise uniform 1.0.
     """
     n = len(df)

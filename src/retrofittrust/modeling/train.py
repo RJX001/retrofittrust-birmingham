@@ -3,6 +3,13 @@
 Primary model is LightGBM (not deep learning). An optional Random Forest
 baseline is fitted under the same K-fold split for a simple comparison.
 Models are serialised with joblib to ``models/ranking_model.joblib``.
+
+Quality-flagged rows are down-weighted (never deleted) via sample weights.
+
+SHAP caveat (see also ``explain.py``): TreeExplainer can misattribute
+importance among correlated features — floor area, habitable rooms and
+heating cost; IMD score versus the income domain. Discuss in the
+dissertation; do not treat SHAP values as causal.
 """
 
 from __future__ import annotations
@@ -14,6 +21,10 @@ from typing import Any
 
 import joblib
 import lightgbm as lgb
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
@@ -721,6 +732,217 @@ def train_ranking_model(
     }
 
 
+def plot_cv_metrics_figure(
+    metrics: dict[str, Any],
+    out_dir: Path | str,
+    *,
+    filename: str = "03_cv_metrics.png",
+) -> Path:
+    """Bar figure of LightGBM CV RMSE / MAE / R² (plus RF baseline if present)."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    dest = out_path / filename
+
+    lgbm_rmse = float(metrics.get("cv_rmse") or 0.0)
+    lgbm_mae = float(metrics.get("cv_mae") or 0.0)
+    lgbm_r2 = float(metrics.get("cv_r2") or 0.0)
+    rf_rmse = metrics.get("baseline_rf_cv_rmse")
+    rf_r2 = metrics.get("baseline_rf_cv_r2")
+
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2))
+
+    error_labels = ["RMSE", "MAE"]
+    error_lgbm = [lgbm_rmse, lgbm_mae]
+    x = np.arange(len(error_labels))
+    width = 0.35 if rf_rmse is not None else 0.55
+    axes[0].bar(x - (width / 2 if rf_rmse is not None else 0), error_lgbm, width, label="LightGBM", color="#1f4e79")
+    if rf_rmse is not None:
+        axes[0].bar(x + width / 2, [float(rf_rmse), np.nan], width, label="Random Forest", color="#7a9bb8")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(error_labels)
+    axes[0].set_ylabel("Score (priority units, 0–1)")
+    axes[0].set_title("Cross-validated error")
+    axes[0].legend(frameon=False)
+    rmse_std = metrics.get("cv_rmse_std")
+    if rmse_std is not None:
+        axes[0].errorbar(
+            x[0] - (width / 2 if rf_rmse is not None else 0),
+            lgbm_rmse,
+            yerr=float(rmse_std),
+            fmt="none",
+            ecolor="black",
+            capsize=4,
+        )
+
+    r2_labels = ["LightGBM"]
+    r2_vals = [lgbm_r2]
+    r2_colors = ["#1f4e79"]
+    if rf_r2 is not None:
+        r2_labels.append("Random Forest")
+        r2_vals.append(float(rf_r2))
+        r2_colors.append("#7a9bb8")
+    axes[1].bar(r2_labels, r2_vals, color=r2_colors, width=0.55)
+    axes[1].set_ylim(0.0, 1.05)
+    axes[1].set_ylabel("R²")
+    axes[1].set_title("Cross-validated R²")
+    for i, val in enumerate(r2_vals):
+        axes[1].text(i, val + 0.02, f"{val:.4f}", ha="center", va="bottom", fontsize=9)
+
+    fig.suptitle("Checkpoint 3 — LightGBM ranking CV metrics (SEED=42)", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(dest, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    return dest
+
+
+def plot_weight_sensitivity_figure(
+    sensitivity: dict[str, Any],
+    out_dir: Path | str,
+    *,
+    filename: str = "03_weight_sensitivity.png",
+) -> Path:
+    """Bar figure of rank stability under alternative target weights."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    dest = out_path / filename
+
+    scenarios = sensitivity.get("scenarios") or []
+    labels = [
+        f"{s.get('epc_gap_weight')}/{s.get('imd_income_weight')}"
+        for s in scenarios
+    ]
+    spearman = [float(s.get("spearman_rank_vs_default") or 0.0) for s in scenarios]
+    overlap_key = next(
+        (k for s in scenarios for k in s if k.startswith("top_") and k.endswith("_overlap_fraction")),
+        "top_10_overlap_fraction",
+    )
+    overlap = [float(s.get(overlap_key) or 0.0) for s in scenarios]
+
+    x = np.arange(len(labels))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(8.5, 4.4))
+    ax.bar(x - width / 2, spearman, width, label="Spearman vs default ranks", color="#1f4e79")
+    ax.bar(x + width / 2, overlap, width, label="Top-10 LSOA overlap", color="#c47b2b")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylim(0.0, 1.05)
+    ax.set_xlabel("EPC-gap / IMD-income weights")
+    ax.set_ylabel("Agreement with default (0.6 / 0.4)")
+    ax.set_title("Target-weight sensitivity (formula only — not retrained families)")
+    ax.legend(frameon=False, loc="lower right")
+    ax.axhline(1.0, color="#888888", linewidth=0.8, linestyle="--")
+    fig.tight_layout()
+    fig.savefig(dest, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    return dest
+
+
+def write_ranking_numbers_markdown(
+    metrics: dict[str, Any],
+    sensitivity: dict[str, Any],
+    out_dir: Path | str,
+    *,
+    filename: str = "03_ranking_numbers.md",
+) -> Path:
+    """Write a British-English CV metrics note for the dissertation appendix."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    dest = out_path / filename
+
+    cv_rmse = metrics.get("cv_rmse")
+    cv_rmse_std = metrics.get("cv_rmse_std")
+    cv_mae = metrics.get("cv_mae")
+    cv_r2 = metrics.get("cv_r2")
+    cv_r2_std = metrics.get("cv_r2_std")
+    rf_rmse = metrics.get("baseline_rf_cv_rmse")
+    rf_r2 = metrics.get("baseline_rf_cv_r2")
+    flagged = metrics.get("flagged_rate_in_train")
+    downweighted = metrics.get("flagged_downweighted", True)
+
+    scenarios = sensitivity.get("scenarios") or []
+    scenario_lines = []
+    for s in scenarios:
+        overlap_key = next(
+            (k for k in s if k.startswith("top_") and k.endswith("_overlap_fraction")),
+            "top_10_overlap_fraction",
+        )
+        scenario_lines.append(
+            f"- EPC {s.get('epc_gap_weight')} / IMD {s.get('imd_income_weight')}: "
+            f"Spearman {s.get('spearman_rank_vs_default')}, "
+            f"top-10 overlap {s.get(overlap_key)}, "
+            f"mean |score shift| {s.get('mean_score_shift')}"
+        )
+
+    rmse_txt = f"{cv_rmse:.6f}" if isinstance(cv_rmse, (int, float)) else "n/a"
+    if isinstance(cv_rmse_std, (int, float)):
+        rmse_txt = f"{cv_rmse:.6f} ± {cv_rmse_std:.6f}"
+    r2_txt = f"{cv_r2:.6f}" if isinstance(cv_r2, (int, float)) else "n/a"
+    if isinstance(cv_r2_std, (int, float)) and isinstance(cv_r2, (int, float)):
+        r2_txt = f"{cv_r2:.6f} ± {cv_r2_std:.6f}"
+    mae_txt = f"{cv_mae:.6f}" if isinstance(cv_mae, (int, float)) else "n/a"
+    flagged_txt = f"{flagged * 100:.1f}%" if isinstance(flagged, (int, float)) else "n/a"
+
+    body = f"""# Checkpoint 3 — LightGBM ranking numbers
+
+Source: `{metrics.get("data_source", "unknown")}`. Seed = 42. British English.
+
+## Training sample
+
+| Item | Value |
+| --- | --- |
+| Input rows | {metrics.get("input_rows", "n/a")} |
+| Training rows (non-missing target) | {metrics.get("train_rows", "n/a")} |
+| Features | {metrics.get("n_features", "n/a")} |
+| LSOA consumer export | {metrics.get("lsoa_export_rows", "n/a")} |
+| Flagged rate in training frame | {flagged_txt} |
+| Flagged rows down-weighted (not deleted) | {"yes" if downweighted else "no"} |
+| Flagged sample weight | {metrics.get("flagged_sample_weight", 0.35)} |
+| Target | {metrics.get("target_formula", "0.6 EPC gap + 0.4 IMD income")} |
+
+## 5-fold CV (LightGBM)
+
+| Metric | LightGBM | Random Forest baseline |
+| --- | --- | --- |
+| RMSE | {rmse_txt} | {f"{rf_rmse:.6f}" if isinstance(rf_rmse, (int, float)) else "n/a"} |
+| MAE | {mae_txt} | — |
+| R² | {r2_txt} | {f"{rf_r2:.6f}" if isinstance(rf_r2, (int, float)) else "n/a"} |
+
+High R² is expected: the composite target is a weighted function of the EPC efficiency gap and IMD income need, both of which are present (or recoverable) in the feature matrix. These metrics show that LightGBM reconstructs the *constructed* priority score, not an independently observed retrofit outcome.
+
+## Target-weight sensitivity
+
+Default weights: EPC-gap 0.6, IMD-income 0.4. Sensitivity changes the *formula* only — it does not retrain a separate model family.
+
+{chr(10).join(scenario_lines) if scenario_lines else "- No sensitivity scenarios recorded."}
+
+## Limitations (dissertation)
+
+- **SHAP correlated features.** TreeExplainer assumes feature independence. Floor area, habitable-room count and heating cost are correlated in EPC data; IMD score and the income domain are also correlated. Importance can be misattributed within those groups.
+- **Ecological fallacy.** IMD and Census attributes are LSOA-level and must not be read as household facts.
+- **EPC performance gap.** Modelled SAP points are not metered kWh.
+- **No ground-truth priority.** Face-validity checks are indicative only.
+"""
+    dest.write_text(body.strip() + "\n", encoding="utf-8")
+    return dest
+
+
+def write_ranking_number_reports(
+    metrics: dict[str, Any],
+    sensitivity: dict[str, Any],
+    reports_dir: Path | str,
+) -> dict[str, str]:
+    """Save 03_cv_metrics.png, 03_weight_sensitivity.png and 03_ranking_numbers.md."""
+    reports_dir = Path(reports_dir)
+    cv_fig = plot_cv_metrics_figure(metrics, reports_dir)
+    sens_fig = plot_weight_sensitivity_figure(sensitivity, reports_dir)
+    md_path = write_ranking_numbers_markdown(metrics, sensitivity, reports_dir)
+    return {
+        "cv_metrics_figure": str(cv_fig),
+        "weight_sensitivity_figure": str(sens_fig),
+        "ranking_numbers_md": str(md_path),
+    }
+
+
 def run_ranking_training(
     *,
     flagged_path: Path | str | None = None,
@@ -831,6 +1053,8 @@ def run_ranking_training(
         "train_rows": result["n_samples"],
         "lsoa_export_rows": len(consumer),
         "flagged_rate_in_train": flagged_rate,
+        "flagged_downweighted": True,
+        "flagged_sample_weight": 0.35,
         "cv_rmse": cv.get("rmse_mean"),
         "cv_rmse_std": cv.get("rmse_std"),
         "cv_mae": cv.get("mae_mean"),
@@ -852,6 +1076,8 @@ def run_ranking_training(
         "face_validity_json": str(FACE_VALIDITY_JSON),
         "face_validity_notes": face_validity.get("sanity_notes", []),
     }
+    figure_paths = write_ranking_number_reports(metrics, sensitivity, reports_dir)
+    metrics.update(figure_paths)
     RANKING_METRICS_JSON.parent.mkdir(parents=True, exist_ok=True)
     RANKING_METRICS_JSON.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 

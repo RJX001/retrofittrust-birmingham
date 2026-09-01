@@ -51,6 +51,13 @@ class IntegrationLoopTests(unittest.TestCase):
             patch("retrofittrust.api.main.load_lsoa_frame", side_effect=fake_load_lsoa_frame),
             patch("retrofittrust.api.features.load_lsoa_frame", side_effect=fake_load_lsoa_frame),
             patch("retrofittrust.api.main._rank_via_program1", return_value=None),
+            patch("retrofittrust.api.main.load_model_bundle", return_value=None),
+            patch("retrofittrust.api.features.load_model_bundle", return_value=None),
+            patch(
+                "retrofittrust.modeling.explain.explain_lsoa",
+                side_effect=FileNotFoundError("test uses synthetic LSOAs"),
+            ),
+            patch("retrofittrust.api.main.explain_from_saved_scores", return_value=None),
         ]
         self._patchers = patchers
         for p in patchers:

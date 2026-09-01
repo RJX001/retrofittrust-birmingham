@@ -76,7 +76,20 @@ def _first_existing(path_candidates: list[Path]) -> Path | None:
     return None
 
 
+def retrofit_scores_path() -> Path | None:
+    """LSOA-level LightGBM scores written by Program 1 (`scripts/03_train_ranking_model.py`)."""
+    return _first_existing(
+        [
+            DATA_PROCESSED / "retrofit_scores.parquet",
+            DATA_PROCESSED / "retrofit_scores.csv",
+        ]
+    )
+
+
 def processed_frame_path() -> Path | None:
+    scores = retrofit_scores_path()
+    if scores is not None:
+        return scores
     return _first_existing(
         [
             DATA_PROCESSED / "quality_flagged.parquet",
@@ -237,31 +250,122 @@ def aggregate_to_lsoa(df: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
-def load_lsoa_frame(*, allow_synthetic_fallback: bool = True) -> tuple[pd.DataFrame, str]:
-    """Return (LSOA-level frame, source label)."""
-    try:
-        from retrofittrust.data import load_merged_dataset
+# Property-level merged_lsoa.parquet is ~476k rows — never aggregate it on the
+# API hot path when LSOA scores or the quality-screen sample already exist.
+_MAX_PROPERTY_ROWS_TO_AGGREGATE = 50_000
+_LSOA_CONTEXT_COLUMNS = (
+    "lsoa21cd",
+    "lsoa21nm",
+    "imd_decile",
+    "income_score",
+    "imd_income_score",
+    "epc_current",
+    "epc_potential",
+    "current_energy_rating",
+    "potential_energy_rating",
+    "epc_gap",
+    "n_properties",
+    "anomaly_flag",
+    "flagged_union",
+    "flagged_consensus",
+    "quality_flag",
+    "retrofit_priority_score",
+)
 
-        merged = load_merged_dataset(DATA_PROCESSED)
-        if merged is not None and len(merged):
-            frame = add_composite_score(aggregate_to_lsoa(normalise_columns(pd.DataFrame(merged))))
-            return frame, "data.pipeline.load_merged_dataset"
-    except (NotImplementedError, FileNotFoundError, ValueError, ImportError, TypeError):
-        pass
+
+def load_retrofit_scores() -> tuple[pd.DataFrame, str] | None:
+    """Load Program 1 consumer scores (one row per LSOA) when present."""
+    path = retrofit_scores_path()
+    if path is None:
+        return None
+    raw = pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+    if raw is None or len(raw) == 0:
+        return None
+    frame = normalise_columns(raw)
+    if "confidence_notes" in frame.columns and "anomaly_flag" not in frame.columns:
+        notes = frame["confidence_notes"].fillna("").astype(str)
+        frame["anomaly_flag"] = notes.str.contains(
+            "low-confidence|flagged|quarantine", case=False, regex=True
+        ).astype(int)
+    return add_composite_score(frame), str(path)
+
+
+def _slim_lsoa_context(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep identity / ranking context only — avoid aggregating 1,000+ recon columns."""
+    present = [c for c in _LSOA_CONTEXT_COLUMNS if c in df.columns]
+    if "lsoa21cd" not in present and "lsoa_code" not in df.columns:
+        return df
+    slim = df[present].copy() if present else df
+    return add_composite_score(aggregate_to_lsoa(normalise_columns(slim)))
+
+
+def _overlay_saved_scores(context: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+    """Prefer LightGBM consumer scores where they exist; keep LSOA context columns."""
+    score_cols = [c for c in scores.columns if c != "lsoa21cd"]
+    ctx = context.drop(columns=[c for c in score_cols if c in context.columns], errors="ignore")
+    return ctx.merge(scores, on="lsoa21cd", how="outer")
+
+
+def load_lsoa_frame(*, allow_synthetic_fallback: bool = True) -> tuple[pd.DataFrame, str]:
+    """Return (LSOA-level frame, source label).
+
+    Preference order (fast → slow): retrofit_scores, quality-flagged sample,
+    then the full merged extract. Never silently drop flagged records.
+    """
+    scores_pack = None
+    try:
+        scores_pack = load_retrofit_scores()
+    except (FileNotFoundError, ValueError, ImportError, TypeError, OSError):
+        scores_pack = None
+
+    context: pd.DataFrame | None = None
+    context_source = ""
 
     try:
         from retrofittrust.quality.screen import load_flagged_dataset
 
         flagged = load_flagged_dataset(DATA_PROCESSED)
-        if flagged is not None and len(flagged):
-            frame = add_composite_score(aggregate_to_lsoa(normalise_columns(pd.DataFrame(flagged))))
-            return frame, "quality.screen.load_flagged_dataset"
-    except (NotImplementedError, FileNotFoundError, ValueError, ImportError, TypeError):
+        if flagged is not None and 0 < len(flagged) <= _MAX_PROPERTY_ROWS_TO_AGGREGATE:
+            context = _slim_lsoa_context(pd.DataFrame(flagged))
+            context_source = "quality.screen.load_flagged_dataset"
+    except (NotImplementedError, FileNotFoundError, ValueError, ImportError, TypeError, OSError):
+        pass
+
+    if scores_pack is not None:
+        scores_df, scores_src = scores_pack
+        if context is not None and "lsoa21cd" in context.columns:
+            return _overlay_saved_scores(context, scores_df), f"{scores_src}+{context_source}"
+        return scores_df, scores_src
+
+    if context is not None:
+        return context, context_source
+
+    try:
+        from retrofittrust.data import load_merged_dataset
+
+        merged = load_merged_dataset(DATA_PROCESSED)
+        if merged is not None and len(merged):
+            work = pd.DataFrame(merged)
+            if len(work) > _MAX_PROPERTY_ROWS_TO_AGGREGATE:
+                # Full Birmingham extract: do not mean-aggregate 476k × 176 on the API path.
+                # Distinct LSOA codes are enough for cohort selection; scores overlay above.
+                codes = work
+                if "lsoa21cd" not in codes.columns and "lsoa_code" in codes.columns:
+                    codes = codes.rename(columns={"lsoa_code": "lsoa21cd"})
+                uniq = codes.drop_duplicates(subset=["lsoa21cd"]).copy()
+                keep = [c for c in _LSOA_CONTEXT_COLUMNS if c in uniq.columns]
+                frame = add_composite_score(normalise_columns(uniq[keep] if keep else uniq))
+                return frame, "data.pipeline.load_merged_dataset (deduped, not full aggregate)"
+            frame = add_composite_score(aggregate_to_lsoa(normalise_columns(work)))
+            return frame, "data.pipeline.load_merged_dataset"
+    except (NotImplementedError, FileNotFoundError, ValueError, ImportError, TypeError, OSError):
         pass
 
     path = processed_frame_path()
     if path is not None:
         raw = pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+        if len(raw) > _MAX_PROPERTY_ROWS_TO_AGGREGATE:
+            raw = raw.head(_MAX_PROPERTY_ROWS_TO_AGGREGATE)
         frame = add_composite_score(aggregate_to_lsoa(normalise_columns(raw)))
         return frame, str(path)
 
@@ -297,15 +401,17 @@ def model_feature_matrix(df: pd.DataFrame, bundle: dict[str, Any]) -> pd.DataFra
     if names:
         missing = [c for c in names if c not in df.columns]
         work = df.copy()
-        for col in missing:
-            work[col] = 0.0
+        if missing:
+            extra = pd.DataFrame(0.0, index=work.index, columns=missing)
+            work = pd.concat([work, extra], axis=1)
         return work[list(names)]
     if model is not None and hasattr(model, "feature_name_"):
         names = list(model.feature_name_)
         work = df.copy()
-        for col in names:
-            if col not in work.columns:
-                work[col] = 0.0
+        missing = [c for c in names if c not in work.columns]
+        if missing:
+            extra = pd.DataFrame(0.0, index=work.index, columns=missing)
+            work = pd.concat([work, extra], axis=1)
         return work[names]
     numeric = df.select_dtypes(include=[np.number])
     return numeric
@@ -319,6 +425,51 @@ def predict_priority(df: pd.DataFrame, bundle: dict[str, Any] | None) -> np.ndar
     if hasattr(model, "predict"):
         return np.asarray(model.predict(X), dtype=float)
     raise TypeError("Loaded ranking artefact has no predict()")
+
+
+def explain_from_saved_scores(lsoa21cd: str, *, top_n: int = 10) -> dict[str, Any] | None:
+    """Local explanation from Program 1's stored top contributing factors.
+
+    Used when TreeExplainer cannot run but ``retrofit_scores`` exists.
+    """
+    pack = load_retrofit_scores()
+    if pack is None:
+        return None
+    frame, source = pack
+    row = frame[frame["lsoa21cd"].astype(str) == str(lsoa21cd)].head(1)
+    if row.empty:
+        return None
+    rec = row.iloc[0]
+    pred = float(pd.to_numeric(rec.get("priority_score"), errors="coerce") or 0.0)
+    features: list[dict[str, Any]] = []
+    raw_factors = rec.get("top_3_contributing_factors")
+    if isinstance(raw_factors, str) and raw_factors.strip():
+        for part in raw_factors.split(";"):
+            token = part.strip()
+            if not token:
+                continue
+            name = token
+            shap_val = 0.0
+            if "(" in token and token.endswith(")"):
+                name, _, rest = token.rpartition("(")
+                name = name.strip()
+                try:
+                    shap_val = float(rest.rstrip(")").replace("+", "").strip())
+                except ValueError:
+                    shap_val = 0.0
+            features.append({"feature": name, "value": None, "shap_value": shap_val})
+    features = features[:top_n]
+    if not features:
+        return None
+    return {
+        "base_value": 0.0,
+        "prediction": pred,
+        "features": features,
+        "method": "saved_retrofit_scores",
+        "caveat": SHAP_CAVEAT + f" Factors stored in {source}.",
+        "model_loaded": model_path() is not None,
+        "lsoa21cd": str(lsoa21cd),
+    }
 
 
 def shap_for_row(
