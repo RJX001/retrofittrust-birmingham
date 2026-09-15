@@ -265,7 +265,7 @@ def _synthetic_geojson(codes: list[str]) -> dict[str, Any]:
         row, col = divmod(i, ncols)
         x0 = west + col * cell_w
         y0 = south + row * cell_h
-        x1, y1 = x0 + cell_w * 0.92, y0 + cell_h * 0.92
+        x1, y1 = x0 + cell_w * 0.84, y0 + cell_h * 0.84
         ring = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
         features.append(
             {

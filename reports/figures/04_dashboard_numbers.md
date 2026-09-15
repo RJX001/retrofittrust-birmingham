@@ -5,9 +5,9 @@ British English. Seed = 42. Static export; FastAPI was not required.
 ## Dataset
 
 - **Loaded:** yes
-- **Source:** `data/processed/merged_lsoa.parquet+retrofit_scores`
-- **LSOA count:** 660
-- **Properties represented (sum of `n_properties`):** 475,073
+- **Source:** `synthetic_fallback`
+- **LSOA count:** 10
+- **Properties represented (sum of `n_properties`):** 1,615
 - **Invalid LSOA rows:** dropped (join audit records 1,153 EPC rows without `lsoa21cd`)
 - **Geometries:** `synthetic_grid`
 - **ONS GeoJSON (`data/external/lsoa_birmingham.geojson`):** missing — choropleth uses the Birmingham-centred synthetic grid fallback (not a 3D twin)
@@ -16,11 +16,11 @@ British English. Seed = 42. Static export; FastAPI was not required.
 
 Existing `twin_state.db` rows mix older `SYNTH_*` demo codes with a few real E01* LSOAs from earlier integration runs. Only matching codes colour as verified on the live twin.
 
-- **lsoa_state rows:** 20
-- **Verified in `lsoa_state`:** 5 (**SYNTHETIC DATA**)
-- **`verified_outcomes` rows:** 10 (**SYNTHETIC DATA**)
-- **Distinct LSOAs in outcomes:** 5
-- **Verified codes matching the live dataset:** 3
+- **lsoa_state rows:** 0
+- **Verified in `lsoa_state`:** 0 (**SYNTHETIC DATA**)
+- **`verified_outcomes` rows:** 0 (**SYNTHETIC DATA**)
+- **Distinct LSOAs in outcomes:** 0
+- **Verified codes matching the live dataset:** 0
 
 ## Figures
 

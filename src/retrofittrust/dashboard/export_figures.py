@@ -60,7 +60,7 @@ def _save_priority_bar_png(df: pd.DataFrame, dest: Path, *, top_n: int = 20) -> 
         for code, name in zip(work["lsoa21cd"], names)
     ]
     fig, ax = plt.subplots(figsize=(10, 8))
-    ax.barh(labels, pd.to_numeric(work["priority_display"], errors="coerce"), color="#4C78A8")
+    ax.barh(labels, pd.to_numeric(work["priority_display"], errors="coerce"), color="#1565C0")
     ax.set_xlabel("Retrofit priority score")
     ax.set_title("Top LSOAs by retrofit priority")
     ax.grid(axis="x", linestyle=":", alpha=0.4)
@@ -103,12 +103,12 @@ def _save_choropleth(
             fig_m, ax = plt.subplots(figsize=(8, 8))
             merged.plot(
                 column="priority_display",
-                cmap="YlOrRd",
+                cmap="Blues",
                 linewidth=0.1,
-                edgecolor="#555555",
+                edgecolor="#111111",
                 legend=True,
                 ax=ax,
-                missing_kwds={"color": "#dddddd"},
+                missing_kwds={"color": "#ffffff"},
             )
             ax.set_axis_off()
             ax.set_title(
@@ -144,7 +144,7 @@ def _save_twin_metrics_png(
         matched_verified,
     ]
     fig, ax = plt.subplots(figsize=(9, 5))
-    bars = ax.bar(labels, values, color=["#4C78A8", "#E45756", "#F2C14E", "#72B7B2"])
+    bars = ax.bar(labels, values, color=["#1565C0", "#0D47A1", "#90CAF9", "#111111"])
     ax.set_ylabel("Count")
     ax.set_title(f"Digital twin metrics  ·  {SYNTHETIC_LABEL} write-backs")
     for bar, val in zip(bars, values):
